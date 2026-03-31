@@ -12,8 +12,10 @@ SHELL := /bin/bash
 ISTIO_VERSION           := 1.28.3
 GATEWAY_API_VERSION     := v1.1.0
 KUBE_PROMETHEUS_VERSION := 61.3.2
-POSTGRESQL_VERSION      := 15.5.28
-MONGODB_VERSION         := 15.6.24
+# Leave POSTGRESQL_VERSION / MONGODB_VERSION empty = use latest chart
+# (Bitnami removes old image tags from Docker Hub; pinning old chart versions breaks image pulls)
+POSTGRESQL_VERSION      :=
+MONGODB_VERSION         :=
 
 # ---------------------------------------------------------------------------
 # Helm release names
@@ -199,7 +201,7 @@ postgresql:
 	helm repo update bitnami
 	helm upgrade --install $(POSTGRESQL_RELEASE) bitnami/postgresql \
 		--namespace databases \
-		--version $(POSTGRESQL_VERSION) \
+		$(if $(POSTGRESQL_VERSION),--version $(POSTGRESQL_VERSION),) \
 		--values postgresql/values.yaml \
 		--wait \
 		--timeout 5m
@@ -217,7 +219,7 @@ mongodb:
 	helm repo update bitnami
 	helm upgrade --install $(MONGODB_RELEASE) bitnami/mongodb \
 		--namespace databases \
-		--version $(MONGODB_VERSION) \
+		$(if $(MONGODB_VERSION),--version $(MONGODB_VERSION),) \
 		--values mongodb/values.yaml \
 		--wait \
 		--timeout 5m
