@@ -42,23 +42,14 @@ resources:
     cpu: 500m
 
 # ---------------------------------------------------------------------------
-# MongoDB configuration tuning for performance testing
+# MongoDB tuning via extraFlags (safe — does not override bitnami's mongod.conf)
+# Do NOT set `configuration:` block alongside these — it will conflict with
+# the dbPath and net settings that Bitnami's entrypoint already manages.
 # ---------------------------------------------------------------------------
 extraFlags:
   - "--wiredTigerCacheSizeGB=0.25"
-
-configuration: |
-  net:
-    port: 27017
-    bindIp: 0.0.0.0
-  storage:
-    dbPath: /bitnami/mongodb/data/db
-    wiredTiger:
-      engineConfig:
-        cacheSizeGB: 0.25
-  operationProfiling:
-    mode: slowOp
-    slowOpThresholdMs: 100
+  - "--slowOpThresholdMs=100"
+  - "--profile=1"
 
 # ---------------------------------------------------------------------------
 # Service
@@ -73,7 +64,6 @@ service:
 metrics:
   enabled: true
 
-  # ServiceMonitor for Prometheus auto-discovery
   serviceMonitor:
     enabled: true
     namespace: "monitoring"
