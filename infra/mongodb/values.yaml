@@ -1,0 +1,91 @@
+# =============================================================================
+# MongoDB Helm values
+# Chart: bitnami/mongodb
+# Namespace: databases
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Architecture - standalone for demo (use replicaSet for production)
+# ---------------------------------------------------------------------------
+architecture: standalone
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  rootUser: "root"
+  rootPassword: "mongodb123"
+  usernames:
+    - "odsuser"
+  passwords:
+    - "odspassword"
+  databases:
+    - "odsperf"
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: true
+  size: 2Gi
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 250m
+  limits:
+    memory: 512Mi
+    cpu: 500m
+
+# ---------------------------------------------------------------------------
+# MongoDB configuration tuning for performance testing
+# ---------------------------------------------------------------------------
+extraFlags:
+  - "--wiredTigerCacheSizeGB=0.25"
+
+configuration: |
+  net:
+    port: 27017
+    bindIp: 0.0.0.0
+  storage:
+    dbPath: /bitnami/mongodb/data/db
+    wiredTiger:
+      engineConfig:
+        cacheSizeGB: 0.25
+  operationProfiling:
+    mode: slowOp
+    slowOpThresholdMs: 100
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 27017
+
+# ---------------------------------------------------------------------------
+# Metrics / Prometheus exporter (mongodb_exporter)
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: true
+
+  # ServiceMonitor for Prometheus auto-discovery
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    interval: "30s"
+    scrapeTimeout: "10s"
+    labels:
+      release: kube-prometheus-stack
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m

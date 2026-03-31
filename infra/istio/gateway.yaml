@@ -1,0 +1,25 @@
+# =============================================================================
+# Istio Gateway (Gateway API style - gateway.networking.k8s.io/v1)
+# =============================================================================
+# GatewayClass "istio" is automatically created by Istio when Gateway API
+# CRDs are present. No IngressGateway Deployment is needed.
+# =============================================================================
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ods-gateway
+  namespace: ingress
+  annotations:
+    # Tells Istio to manage this Gateway
+    networking.istio.io/service-type: LoadBalancer
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          # Allow HTTPRoutes from any namespace to attach to this Gateway
+          from: All

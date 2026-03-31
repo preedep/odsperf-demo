@@ -1,0 +1,45 @@
+# =============================================================================
+# Namespaces for ODS Performance Demo
+# =============================================================================
+# Namespace layout:
+#   ingress      - Istio Gateway (entry point for all HTTP traffic)
+#   ods-service  - ODS application (Rust service - Step 2)
+#   monitoring   - Prometheus + Grafana
+#   databases    - PostgreSQL + MongoDB
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/managed-by: odsperf
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ods-service
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/managed-by: odsperf
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/managed-by: odsperf
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: databases
+  labels:
+    # Disable sidecar injection for databases to avoid connection issues
+    istio-injection: disabled
+    app.kubernetes.io/managed-by: odsperf

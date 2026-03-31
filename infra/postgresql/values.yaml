@@ -1,0 +1,89 @@
+# =============================================================================
+# PostgreSQL Helm values
+# Chart: bitnami/postgresql
+# Namespace: databases
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+auth:
+  postgresPassword: "postgres123"
+  username: "odsuser"
+  password: "odspassword"
+  database: "odsperf"
+
+# ---------------------------------------------------------------------------
+# Primary instance
+# ---------------------------------------------------------------------------
+primary:
+  persistence:
+    enabled: true
+    size: 2Gi
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+  # PostgreSQL configuration tuning for performance testing
+  extendedConfiguration: |
+    max_connections = 200
+    shared_buffers = 128MB
+    effective_cache_size = 256MB
+    work_mem = 4MB
+    maintenance_work_mem = 64MB
+    wal_buffers = 16MB
+    checkpoint_completion_target = 0.9
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    log_min_duration_statement = 100
+    log_statement = 'none'
+    track_activity_query_size = 2048
+    pg_stat_statements.track = all
+
+  initdb:
+    scripts:
+      init.sql: |
+        -- Enable pg_stat_statements for query performance tracking
+        CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+        -- Create schema for ODS performance test
+        CREATE SCHEMA IF NOT EXISTS odsperf;
+        GRANT ALL ON SCHEMA odsperf TO odsuser;
+
+  service:
+    type: ClusterIP
+    port: 5432
+
+# ---------------------------------------------------------------------------
+# Metrics / Prometheus exporter (postgres_exporter)
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: true
+
+  # ServiceMonitor for Prometheus to auto-discover
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    interval: "30s"
+    scrapeTimeout: "10s"
+    labels:
+      release: kube-prometheus-stack
+
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+# ---------------------------------------------------------------------------
+# Disable read replicas for demo (single node)
+# ---------------------------------------------------------------------------
+readReplicas:
+  replicaCount: 0
