@@ -1,0 +1,83 @@
+# =============================================================================
+# HTTPRoutes - Route traffic from Gateway to backend Services
+# =============================================================================
+# All HTTPRoutes live in the "ingress" namespace and reference the Gateway.
+# Cross-namespace Service references are permitted via ReferenceGrants.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Grafana
+# Access: http://grafana.local  (add to /etc/hosts pointing to Gateway IP)
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: ingress
+spec:
+  parentRefs:
+    - name: ods-gateway
+      namespace: ingress
+  hostnames:
+    - "grafana.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kube-prometheus-stack-grafana
+          namespace: monitoring
+          port: 80
+
+---
+# ---------------------------------------------------------------------------
+# Prometheus
+# Access: http://prometheus.local
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prometheus
+  namespace: ingress
+spec:
+  parentRefs:
+    - name: ods-gateway
+      namespace: ingress
+  hostnames:
+    - "prometheus.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kube-prometheus-stack-prometheus
+          namespace: monitoring
+          port: 9090
+
+---
+# ---------------------------------------------------------------------------
+# ODS Service (Rust API) - Placeholder for Step 2
+# Access: http://ods.local
+# ---------------------------------------------------------------------------
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: HTTPRoute
+# metadata:
+#   name: ods-service
+#   namespace: ingress
+# spec:
+#   parentRefs:
+#     - name: ods-gateway
+#       namespace: ingress
+#   hostnames:
+#     - "ods.local"
+#   rules:
+#     - matches:
+#         - path:
+#             type: PathPrefix
+#             value: /
+#       backendRefs:
+#         - name: ods-service
+#           namespace: ods-service
+#           port: 8080

@@ -1,0 +1,37 @@
+# =============================================================================
+# ReferenceGrants - Allow cross-namespace traffic via Gateway API
+# =============================================================================
+# Required when HTTPRoute in namespace A references a Service in namespace B.
+# Each target namespace must grant permission explicitly.
+# =============================================================================
+
+# Allow the ingress namespace to reference Services in monitoring namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-ingress-to-monitoring
+  namespace: monitoring
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ingress
+  to:
+    - group: ""
+      kind: Service
+
+---
+# Allow the ingress namespace to reference Services in ods-service namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-ingress-to-ods-service
+  namespace: ods-service
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ingress
+  to:
+    - group: ""
+      kind: Service

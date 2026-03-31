@@ -1,0 +1,133 @@
+# =============================================================================
+# kube-prometheus-stack Helm values
+# Chart: prometheus-community/kube-prometheus-stack
+# Namespace: monitoring
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    # Discover ServiceMonitors from ALL namespaces (databases, ods-service, etc.)
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+
+    # Discover PodMonitors from ALL namespaces
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+
+    # Retention
+    retention: 7d
+
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: 250m
+      limits:
+        memory: 1Gi
+        cpu: 500m
+
+  service:
+    type: ClusterIP
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  enabled: true
+  adminUser: admin
+  adminPassword: "admin"
+
+  service:
+    type: ClusterIP
+
+  # Auto-provision dashboards from ConfigMaps labelled grafana_dashboard=1
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+      label: grafana_dashboard
+      labelValue: "1"
+    datasources:
+      enabled: true
+
+  # Pre-load dashboards from grafana.com
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: default
+          orgId: 1
+          folder: "ODS Performance"
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+  dashboards:
+    default:
+      # PostgreSQL dashboard (by Stefan Vorkoetter)
+      postgresql:
+        gnetId: 9628
+        revision: 7
+        datasource: Prometheus
+
+      # MongoDB dashboard
+      mongodb:
+        gnetId: 2583
+        revision: 2
+        datasource: Prometheus
+
+      # Kubernetes cluster overview
+      kubernetes-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 200m
+
+# ---------------------------------------------------------------------------
+# AlertManager - disabled for this demo
+# ---------------------------------------------------------------------------
+alertmanager:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Node Exporter - enabled for host metrics
+# ---------------------------------------------------------------------------
+nodeExporter:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Kube State Metrics
+# ---------------------------------------------------------------------------
+kubeStateMetrics:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Disable components not needed for this demo
+# ---------------------------------------------------------------------------
+kubeApiServer:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
