@@ -25,6 +25,15 @@ POSTGRESQL_RELEASE  := postgresql
 MONGODB_RELEASE     := mongodb
 
 # ---------------------------------------------------------------------------
+# Namespaces
+# ---------------------------------------------------------------------------
+NS_INGRESS    := ingress
+NS_ODS        := ods-service
+NS_MONITORING := monitoring
+NS_PG         := database-pg
+NS_MONGO      := database-mongo
+
+# ---------------------------------------------------------------------------
 # Detect Kubernetes context (Docker Desktop vs minikube)
 # ---------------------------------------------------------------------------
 K8S_CONTEXT := $(shell kubectl config current-context 2>/dev/null)
@@ -37,8 +46,6 @@ YELLOW := \033[1;33m
 RED    := \033[0;31m
 NC     := \033[0m
 
-# Fix: do NOT wrap $(1) with extra quotes inside define.
-#      Callers must NOT pass quoted strings — just plain text.
 define log_info
 	@printf '$(GREEN)[INFO]$(NC) %s\n' '$(1)'
 endef
@@ -68,25 +75,26 @@ help:
 	@echo ""
 	@echo "  Individual steps:"
 	@echo "    gateway-api-crds   Install Kubernetes Gateway API CRDs"
-	@echo "    namespaces         Create Kubernetes namespaces"
+	@echo "    namespaces         Create Kubernetes namespaces + ResourceQuotas"
 	@echo "    istio              Install Istio via Helm"
 	@echo "    gateway            Apply Istio Gateway + HTTPRoute resources"
 	@echo "    monitoring         Install kube-prometheus-stack (Prometheus + Grafana)"
-	@echo "    postgresql         Install PostgreSQL"
-	@echo "    mongodb            Install MongoDB"
+	@echo "    postgresql         Install PostgreSQL  -> namespace: $(NS_PG)"
+	@echo "    mongodb            Install MongoDB     -> namespace: $(NS_MONGO)"
 	@echo ""
 	@echo "  Utilities:"
 	@echo "    status             Show status of all deployments"
-	@echo "    port-forward-grafana      Port-forward Grafana     -> localhost:3000"
-	@echo "    port-forward-prometheus   Port-forward Prometheus  -> localhost:9090"
-	@echo "    port-forward-postgresql   Port-forward PostgreSQL  -> localhost:5432"
-	@echo "    port-forward-mongodb      Port-forward MongoDB     -> localhost:27017"
+	@echo "    port-forward-grafana      Grafana     -> http://localhost:3000"
+	@echo "    port-forward-prometheus   Prometheus  -> http://localhost:9090"
+	@echo "    port-forward-postgresql   PostgreSQL  -> localhost:5432"
+	@echo "    port-forward-mongodb      MongoDB     -> localhost:27017"
 	@echo "    gateway-ip         Get Gateway external IP"
 	@echo "    hosts-entry        Print /etc/hosts entries needed"
 	@echo ""
 	@echo "  Teardown:"
-	@echo "    clean              Uninstall all Helm releases + namespaces"
-	@echo "    clean-databases    Uninstall databases only (+ PVCs)"
+	@echo "    clean              Uninstall everything"
+	@echo "    clean-pg           Uninstall PostgreSQL only (+ PVC)"
+	@echo "    clean-mongo        Uninstall MongoDB only (+ PVC)"
 	@echo ""
 	@echo "  Current K8s context: $(K8S_CONTEXT)"
 	@echo ""
@@ -129,13 +137,14 @@ gateway-api-crds:
 	$(call log_info,Gateway API CRDs installed)
 
 # =============================================================================
-# STEP 2: Namespaces
+# STEP 2: Namespaces + ResourceQuotas
 # =============================================================================
 .PHONY: namespaces
 namespaces:
-	$(call log_info,[2/6] Creating namespaces...)
+	$(call log_info,[2/6] Creating namespaces and ResourceQuotas...)
 	kubectl apply -f namespaces.yaml
 	$(call log_info,Namespaces created)
+	@echo "  Namespaces: $(NS_INGRESS) | $(NS_ODS) | $(NS_MONITORING) | $(NS_PG) | $(NS_MONGO)"
 
 # =============================================================================
 # STEP 3: Istio
@@ -161,7 +170,7 @@ istio:
 	@istioctl verify-install 2>/dev/null || true
 
 # =============================================================================
-# STEP 4: Gateway API resources (Gateway + HTTPRoutes + ReferenceGrants)
+# STEP 4: Gateway API resources
 # =============================================================================
 .PHONY: gateway
 gateway:
@@ -169,14 +178,14 @@ gateway:
 	kubectl apply -f istio/gateway.yaml
 	kubectl apply -f istio/reference-grants.yaml
 	@echo "Waiting for Gateway to be programmed (up to 120s)..."
-	@kubectl wait gateway/ods-gateway -n ingress \
+	@kubectl wait gateway/ods-gateway -n $(NS_INGRESS) \
 		--for=condition=Programmed \
 		--timeout=120s 2>/dev/null || true
 	kubectl apply -f istio/httproute.yaml
 	$(call log_info,Gateway + HTTPRoutes applied)
 
 # =============================================================================
-# STEP 5: Monitoring (Prometheus + Grafana)
+# STEP 5: Monitoring
 # =============================================================================
 .PHONY: monitoring
 monitoring:
@@ -184,7 +193,7 @@ monitoring:
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
 	helm repo update prometheus-community
 	helm upgrade --install $(PROMETHEUS_RELEASE) prometheus-community/kube-prometheus-stack \
-		--namespace monitoring \
+		--namespace $(NS_MONITORING) \
 		--version $(KUBE_PROMETHEUS_VERSION) \
 		--values monitoring/kube-prometheus-values.yaml \
 		--wait \
@@ -192,40 +201,40 @@ monitoring:
 	$(call log_info,Monitoring stack installed)
 
 # =============================================================================
-# STEP 6a: PostgreSQL
+# STEP 6a: PostgreSQL  (namespace: database-pg)
 # =============================================================================
 .PHONY: postgresql
 postgresql:
-	$(call log_info,[6a/6] Installing PostgreSQL $(POSTGRESQL_VERSION)...)
+	$(call log_info,[6a/6] Installing PostgreSQL into namespace $(NS_PG)...)
 	helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
 	helm repo update bitnami
 	helm upgrade --install $(POSTGRESQL_RELEASE) bitnami/postgresql \
-		--namespace databases \
+		--namespace $(NS_PG) \
 		$(if $(POSTGRESQL_VERSION),--version $(POSTGRESQL_VERSION),) \
 		--values postgresql/values.yaml \
 		--wait \
 		--timeout 5m
 	$(call log_info,PostgreSQL installed)
 	@echo ""
-	@echo "  Connection: postgresql://odsuser:odspassword@postgresql.databases.svc.cluster.local:5432/odsperf"
+	@echo "  Connection: postgresql://odsuser:odspassword@postgresql.$(NS_PG).svc.cluster.local:5432/odsperf"
 
 # =============================================================================
-# STEP 6b: MongoDB
+# STEP 6b: MongoDB  (namespace: database-mongo)
 # =============================================================================
 .PHONY: mongodb
 mongodb:
-	$(call log_info,[6b/6] Installing MongoDB $(MONGODB_VERSION)...)
+	$(call log_info,[6b/6] Installing MongoDB into namespace $(NS_MONGO)...)
 	helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
 	helm repo update bitnami
 	helm upgrade --install $(MONGODB_RELEASE) bitnami/mongodb \
-		--namespace databases \
+		--namespace $(NS_MONGO) \
 		$(if $(MONGODB_VERSION),--version $(MONGODB_VERSION),) \
 		--values mongodb/values.yaml \
 		--wait \
 		--timeout 5m
 	$(call log_info,MongoDB installed)
 	@echo ""
-	@echo "  Connection: mongodb://odsuser:odspassword@mongodb.databases.svc.cluster.local:27017/odsperf"
+	@echo "  Connection: mongodb://odsuser:odspassword@mongodb.$(NS_MONGO).svc.cluster.local:27017/odsperf"
 
 # =============================================================================
 # UTILITIES
@@ -234,33 +243,37 @@ mongodb:
 .PHONY: status
 status:
 	@echo ""
-	@echo "=== Pods (monitoring) ==="
-	@kubectl get pods -n monitoring 2>/dev/null || true
+	@echo "=== Pods ($(NS_MONITORING)) ==="
+	@kubectl get pods -n $(NS_MONITORING) 2>/dev/null || true
 	@echo ""
-	@echo "=== Pods (databases) ==="
-	@kubectl get pods -n databases 2>/dev/null || true
+	@echo "=== Pods ($(NS_PG)) ==="
+	@kubectl get pods -n $(NS_PG) 2>/dev/null || true
 	@echo ""
-	@echo "=== Pods (ingress) ==="
-	@kubectl get pods -n ingress 2>/dev/null || true
+	@echo "=== Pods ($(NS_MONGO)) ==="
+	@kubectl get pods -n $(NS_MONGO) 2>/dev/null || true
+	@echo ""
+	@echo "=== Pods ($(NS_INGRESS)) ==="
+	@kubectl get pods -n $(NS_INGRESS) 2>/dev/null || true
 	@echo ""
 	@echo "=== Gateway ==="
-	@kubectl get gateway -n ingress 2>/dev/null || true
+	@kubectl get gateway -n $(NS_INGRESS) 2>/dev/null || true
 	@echo ""
 	@echo "=== HTTPRoutes ==="
-	@kubectl get httproutes -n ingress 2>/dev/null || true
+	@kubectl get httproutes -n $(NS_INGRESS) 2>/dev/null || true
 	@echo ""
-	@echo "=== Services (databases) ==="
-	@kubectl get svc -n databases 2>/dev/null || true
+	@echo "=== ResourceQuotas ==="
+	@kubectl get resourcequota -n $(NS_PG) 2>/dev/null || true
+	@kubectl get resourcequota -n $(NS_MONGO) 2>/dev/null || true
 
 .PHONY: gateway-ip
 gateway-ip:
 	@echo "Gateway external IP / Hostname:"
-	@kubectl get gateway ods-gateway -n ingress \
+	@kubectl get gateway ods-gateway -n $(NS_INGRESS) \
 		-o jsonpath='{.status.addresses[0].value}' 2>/dev/null && echo "" || echo "(not yet assigned)"
 
 .PHONY: hosts-entry
 hosts-entry:
-	@GW_IP=$$(kubectl get gateway ods-gateway -n ingress \
+	@GW_IP=$$(kubectl get gateway ods-gateway -n $(NS_INGRESS) \
 		-o jsonpath='{.status.addresses[0].value}' 2>/dev/null); \
 	if [ -z "$$GW_IP" ]; then \
 		GW_IP="127.0.0.1"; \
@@ -268,8 +281,7 @@ hosts-entry:
 		echo "       Run 'make gateway-ip' later once the Gateway is ready."; \
 	fi; \
 	echo ""; \
-	echo "Add to /etc/hosts (macOS/Linux) or C:\\Windows\\System32\\drivers\\etc\\hosts (Windows):"; \
-	echo ""; \
+	echo "Add to /etc/hosts:"; \
 	echo "  $$GW_IP  grafana.local"; \
 	echo "  $$GW_IP  prometheus.local"; \
 	echo "  $$GW_IP  ods.local"; \
@@ -278,22 +290,22 @@ hosts-entry:
 .PHONY: port-forward-grafana
 port-forward-grafana:
 	$(call log_info,Grafana -> http://localhost:3000  login: admin / admin)
-	kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+	kubectl port-forward -n $(NS_MONITORING) svc/kube-prometheus-stack-grafana 3000:80
 
 .PHONY: port-forward-prometheus
 port-forward-prometheus:
 	$(call log_info,Prometheus -> http://localhost:9090)
-	kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+	kubectl port-forward -n $(NS_MONITORING) svc/kube-prometheus-stack-prometheus 9090:9090
 
 .PHONY: port-forward-postgresql
 port-forward-postgresql:
 	$(call log_info,PostgreSQL -> localhost:5432)
-	kubectl port-forward -n databases svc/postgresql 5432:5432
+	kubectl port-forward -n $(NS_PG) svc/postgresql 5432:5432
 
 .PHONY: port-forward-mongodb
 port-forward-mongodb:
 	$(call log_info,MongoDB -> localhost:27017)
-	kubectl port-forward -n databases svc/mongodb 27017:27017
+	kubectl port-forward -n $(NS_MONGO) svc/mongodb 27017:27017
 
 # =============================================================================
 # TEARDOWN
@@ -301,21 +313,27 @@ port-forward-mongodb:
 .PHONY: clean
 clean:
 	$(call log_warn,Removing all ODS performance demo infrastructure...)
-	-helm uninstall $(MONGODB_RELEASE)    -n databases  2>/dev/null || true
-	-helm uninstall $(POSTGRESQL_RELEASE) -n databases  2>/dev/null || true
-	-helm uninstall $(PROMETHEUS_RELEASE) -n monitoring 2>/dev/null || true
+	-helm uninstall $(MONGODB_RELEASE)    -n $(NS_MONGO)      2>/dev/null || true
+	-helm uninstall $(POSTGRESQL_RELEASE) -n $(NS_PG)         2>/dev/null || true
+	-helm uninstall $(PROMETHEUS_RELEASE) -n $(NS_MONITORING) 2>/dev/null || true
 	-kubectl delete -f istio/httproute.yaml        2>/dev/null || true
 	-kubectl delete -f istio/reference-grants.yaml 2>/dev/null || true
 	-kubectl delete -f istio/gateway.yaml          2>/dev/null || true
 	-helm uninstall istiod     -n istio-system 2>/dev/null || true
 	-helm uninstall istio-base -n istio-system 2>/dev/null || true
-	-kubectl delete namespace istio-system ingress ods-service monitoring databases 2>/dev/null || true
+	-kubectl delete namespace istio-system $(NS_INGRESS) $(NS_ODS) $(NS_MONITORING) $(NS_PG) $(NS_MONGO) 2>/dev/null || true
 	$(call log_info,Teardown complete)
 
-.PHONY: clean-databases
-clean-databases:
-	$(call log_warn,Removing databases only...)
-	-helm uninstall $(MONGODB_RELEASE)    -n databases 2>/dev/null || true
-	-helm uninstall $(POSTGRESQL_RELEASE) -n databases 2>/dev/null || true
-	-kubectl delete pvc --all -n databases 2>/dev/null || true
-	$(call log_info,Databases removed)
+.PHONY: clean-pg
+clean-pg:
+	$(call log_warn,Removing PostgreSQL...)
+	-helm uninstall $(POSTGRESQL_RELEASE) -n $(NS_PG) 2>/dev/null || true
+	-kubectl delete pvc --all -n $(NS_PG) 2>/dev/null || true
+	$(call log_info,PostgreSQL removed)
+
+.PHONY: clean-mongo
+clean-mongo:
+	$(call log_warn,Removing MongoDB...)
+	-helm uninstall $(MONGODB_RELEASE) -n $(NS_MONGO) 2>/dev/null || true
+	-kubectl delete pvc --all -n $(NS_MONGO) 2>/dev/null || true
+	$(call log_info,MongoDB removed)

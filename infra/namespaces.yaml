@@ -5,7 +5,13 @@
 #   ingress      - Istio Gateway (entry point for all HTTP traffic)
 #   ods-service  - ODS application (Rust service - Step 2)
 #   monitoring   - Prometheus + Grafana
-#   databases    - PostgreSQL + MongoDB
+#   database-pg  - PostgreSQL (isolated — own ResourceQuota, RBAC, NetworkPolicy)
+#   database-mongo - MongoDB (isolated — own ResourceQuota, RBAC, NetworkPolicy)
+#
+# Separating database namespaces ensures:
+#   - Fair benchmark: each DB gets identical ResourceQuota
+#   - Independent lifecycle: reinstall one without touching the other
+#   - Cleaner RBAC: ods-service can be granted access per DB independently
 # =============================================================================
 
 apiVersion: v1
@@ -38,8 +44,47 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: databases
+  name: database-pg
   labels:
-    # Disable sidecar injection for databases to avoid connection issues
     istio-injection: disabled
     app.kubernetes.io/managed-by: odsperf
+    odsperf/db: postgresql
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: database-mongo
+  labels:
+    istio-injection: disabled
+    app.kubernetes.io/managed-by: odsperf
+    odsperf/db: mongodb
+
+---
+# ---------------------------------------------------------------------------
+# ResourceQuota — ให้ทั้งสอง DB namespace ได้ทรัพยากรเท่ากัน (fair benchmark)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: db-quota
+  namespace: database-pg
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1Gi
+    limits.cpu: "2"
+    limits.memory: 2Gi
+
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: db-quota
+  namespace: database-mongo
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1Gi
+    limits.cpu: "2"
+    limits.memory: 2Gi

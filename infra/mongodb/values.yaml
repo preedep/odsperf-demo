@@ -66,7 +66,7 @@ metrics:
 
   serviceMonitor:
     enabled: true
-    namespace: "monitoring"
+    namespace: "database-mongo"
     interval: "30s"
     scrapeTimeout: "10s"
     labels:

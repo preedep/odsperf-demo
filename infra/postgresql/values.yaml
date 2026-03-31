@@ -68,7 +68,7 @@ metrics:
   # ServiceMonitor for Prometheus to auto-discover
   serviceMonitor:
     enabled: true
-    namespace: "monitoring"
+    namespace: "database-pg"
     interval: "30s"
     scrapeTimeout: "10s"
     labels:
