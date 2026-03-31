@@ -42,14 +42,11 @@ resources:
     cpu: 500m
 
 # ---------------------------------------------------------------------------
-# MongoDB tuning via extraFlags (safe — does not override bitnami's mongod.conf)
-# Do NOT set `configuration:` block alongside these — it will conflict with
-# the dbPath and net settings that Bitnami's entrypoint already manages.
+# MongoDB tuning — extraFlags disabled for initial diagnostics
+# Uncomment after confirming MongoDB starts cleanly
 # ---------------------------------------------------------------------------
-extraFlags:
-  - "--wiredTigerCacheSizeGB=0.25"
-  - "--slowOpThresholdMs=100"
-  - "--profile=1"
+# extraFlags:
+#   - "--wiredTigerCacheSizeGB=0.25"
 
 # ---------------------------------------------------------------------------
 # Service
