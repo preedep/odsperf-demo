@@ -35,18 +35,17 @@ persistence:
 # ---------------------------------------------------------------------------
 resources:
   requests:
-    memory: 256Mi
+    memory: 512Mi
     cpu: 250m
   limits:
-    memory: 512Mi
+    memory: 1Gi
     cpu: 500m
 
 # ---------------------------------------------------------------------------
-# MongoDB tuning — extraFlags disabled for initial diagnostics
-# Uncomment after confirming MongoDB starts cleanly
+# MongoDB tuning — WiredTiger cache
+# ไม่ใช้ extraFlags (Bitnami entrypoint อาจ parse ไม่ถูก)
+# แก้ OOMKill ด้วยการเพิ่ม memory limit เป็น 1Gi แทน
 # ---------------------------------------------------------------------------
-# extraFlags:
-#   - "--wiredTigerCacheSizeGB=0.25"
 
 # ---------------------------------------------------------------------------
 # Service

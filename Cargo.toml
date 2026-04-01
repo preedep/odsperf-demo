@@ -8,8 +8,25 @@ name = "odsperf-demo"
 path = "src/main.rs"
 
 [[bin]]
+name = "generate_csv"
+path = "src/bin/generate_csv.rs"
+
+[[bin]]
+name = "load_pg"
+path = "src/bin/load_pg.rs"
+
+[[bin]]
+name = "load_mongo"
+path = "src/bin/load_mongo.rs"
+
+# ── Legacy (kept for reference, superseded by generate_csv + load_pg/load_mongo) ──
+[[bin]]
 name = "generate_mock_data"
 path = "src/bin/generate_mock_data.rs"
+
+[[bin]]
+name = "generate_mock_data_mongo"
+path = "src/bin/generate_mock_data_mongo.rs"
 
 [dependencies]
 # ── Web framework ──────────────────────────────────────────────────────────
@@ -43,3 +60,4 @@ anyhow    = "1"
 # ── Utilities ──────────────────────────────────────────────────────────────
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
+csv  = "1"

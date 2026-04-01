@@ -26,11 +26,13 @@
 
 ```
 odsperf-demo/
+├── data/                               # Generated CSV (gitignored)
+│   └── mock_transactions.csv           # 1M rows — shared source for PG + Mongo
 ├── docs/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
 │   └── api-reference.md                # REST API specification
 ├── scripts/
-│   ├── generate-mock-data.sh           # Build + รัน mock data generator (PostgreSQL)
+│   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
 │   └── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -65,7 +67,9 @@ odsperf-demo/
 │   │   ├── pg.rs                       # POST /v1/query-pg
 │   │   └── mongo.rs                    # POST /v1/query-mongo
 │   └── bin/
-│       └── generate_mock_data.rs       # Binary: insert 1M records → PostgreSQL
+│       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
+│       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
+│       └── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
 ├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
@@ -202,64 +206,90 @@ mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 
 สร้างข้อมูลทดสอบสำหรับ benchmark ก่อน deploy ODS Service
 
-### ภาพรวม
+### ภาพรวม — Architecture ใหม่ (CSV-first)
 
-| เครื่องมือ                    | ภาษา | Target      | Records    |
-|-----------------------------|------|-------------|-----------|
-| `src/bin/generate_mock_data.rs` | Rust | PostgreSQL  | 1,000,000 |
+ทั้ง PostgreSQL และ MongoDB ต้องใช้ **ข้อมูลชุดเดียวกัน** เพื่อให้ benchmark เปรียบเทียบได้จริง (apple-to-apple)
 
-> ℹ️ MongoDB ใช้ข้อมูลชุดเดียวกัน — sync จาก PostgreSQL ผ่าน ODS Service หรือ import แยกตาม roadmap
-
-### 3.1 เตรียม Port Forward (ถ้าใช้ Kubernetes)
-
-```bash
-# Terminal แยก — ค้างไว้ตลอดการ generate
-cd infra && make port-forward-postgresql
+```
+generate_csv  ──→  data/mock_transactions.csv  ──→  load_pg    → PostgreSQL
+                                                └──→  load_mongo → MongoDB
 ```
 
-### 3.2 รัน Generator ผ่าน Shell Script
+| Binary                    | หน้าที่                                    |
+|--------------------------|-------------------------------------------|
+| `src/bin/generate_csv.rs` | สร้าง CSV 1M rows (ไม่ต่อ DB)             |
+| `src/bin/load_pg.rs`      | อ่าน CSV → PostgreSQL (batch INSERT)      |
+| `src/bin/load_mongo.rs`   | อ่าน CSV → MongoDB (batch insert_many)    |
+
+### 3.1 เตรียม Port Forward
 
 ```bash
-# รันจาก project root
-./scripts/generate-mock-data.sh
+# รันใน terminal แยก — ค้างไว้ตลอด
+kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
+kubectl port-forward svc/mongodb    27017:27017 -n database-mongo &
 ```
 
-Script จะ:
-1. ตรวจสอบ connection ไปยัง PostgreSQL
-2. ตรวจสอบว่า schema (`odsperf.account_transaction`) มีอยู่แล้ว — ถ้าไม่มีจะสร้างอัตโนมัติ
-3. ถ้า table มีข้อมูลอยู่แล้ว จะถามก่อน truncate
-4. Build `generate_mock_data` binary (release mode)
-5. Insert 1,000,000 records แบบ batch (5,000 records/batch)
-6. แสดง summary และ verify จำนวน record
-
-### 3.3 รัน Generator โดยตรง (ไม่ใช้ script)
+### 3.2 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
 
 ```bash
-# Build binary
-cargo build --release --bin generate_mock_data
+./scripts/seed.sh
+```
 
-# รันพร้อม custom DATABASE_URL
+Script จะรัน 3 ขั้นตอนตามลำดับ:
+1. **Generate CSV** → `data/mock_transactions.csv` (ไม่ต่อ DB)
+2. **Load PostgreSQL** → อ่าน CSV และ insert batch ทีละ 5,000 rows
+3. **Load MongoDB** → อ่าน CSV ชุดเดียวกัน และ insert_many batch ทีละ 5,000 docs
+
+### 3.3 รันแยกทีละขั้นตอน
+
+```bash
+# ขั้นตอน 1: สร้าง CSV
+cargo build --release --bin generate_csv
+./target/release/generate_csv
+# → data/mock_transactions.csv (~100 MB, 1M rows)
+
+# ขั้นตอน 2: Load PostgreSQL
+cargo build --release --bin load_pg
 DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
-  ./target/release/generate_mock_data
+  ./target/release/load_pg
+
+# ขั้นตอน 3: Load MongoDB
+cargo build --release --bin load_mongo
+MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
+  ./target/release/load_mongo
+```
+
+### Options ของ seed.sh
+
+```bash
+./scripts/seed.sh                 # full pipeline (CSV + PG + Mongo)
+./scripts/seed.sh --csv-only      # สร้าง CSV เท่านั้น
+./scripts/seed.sh --pg-only       # load PG เท่านั้น (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --mongo-only    # load Mongo เท่านั้น (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --no-mongo      # CSV + PG เท่านั้น
 ```
 
 ### ตัวอย่าง Output
 
 ```
-🚀 Starting PostgreSQL Mock Data Generator
-📊 Target: 1000000 records
-📦 Batch size: 5000
-🔌 Connecting to PostgreSQL...
-✅ Connected successfully
-✓ Batch 1/200   | Inserted:   5000 | Batch time: 0.21s | Total time: 0.21s | Speed: 23810 rec/s
-✓ Batch 2/200   | Inserted:  10000 | Batch time: 0.19s | Total time: 0.40s | Speed: 25000 rec/s
-...
-✓ Batch 200/200 | Inserted: 1000000 | Batch time: 0.20s | Total time: 42.5s | Speed: 23529 rec/s
+══════ Step 1 — Generate CSV ══════
+🚀 Mock Transaction CSV Generator
+📊 Target  : 1000000 records
+📁 Output  : data/mock_transactions.csv
+   10% |   100000 rows | 2.1s elapsed | 47619 rows/s
+  ...
+  100% |  1000000 rows | 21.3s elapsed | 46948 rows/s
+✅ Done! 1000000 records → data/mock_transactions.csv (98.4 MB)
 
-🎉 Data generation completed!
-📊 Total records inserted: 1000000
-⏱️  Total time: 42.50s
-⚡ Average speed: 23529 records/second
+══════ Step 2 — Load PostgreSQL ══════
+✓ Batch    1 |      5000 / 1000000 | 0.22s batch | 22727 rows/s
+...
+🎉 PostgreSQL load complete! 1000000 rows — 45.2s
+
+══════ Step 3 — Load MongoDB ══════
+✓ Batch    1 |      5000 / 1000000 | 0.18s batch | 27777 docs/s
+...
+🎉 MongoDB load complete! 1000000 docs — 36.8s
 ```
 
 ### ข้อมูลที่ Generate
@@ -276,18 +306,34 @@ DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 
 ### ตรวจสอบข้อมูลหลัง Generate
 
+**PostgreSQL:**
 ```bash
-# นับ records
-psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
-  -c "SELECT COUNT(*) FROM odsperf.account_transaction;"
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" -c "
+  SELECT COUNT(*) AS total,
+         MIN(dtrans) AS min_date,
+         MAX(dtrans) AS max_date
+  FROM odsperf.account_transaction;"
 
-# ดู date range
-psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
-  -c "SELECT MIN(dtrans), MAX(dtrans) FROM odsperf.account_transaction;"
-
-# ดูตัวอย่างข้อมูล
+# ดูตัวอย่าง
 psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
   -c "SELECT iacct, dtrans, camt, aamount, cmnemo FROM odsperf.account_transaction LIMIT 5;"
+
+# ขนาด storage
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" -c "
+  SELECT pg_size_pretty(pg_total_relation_size('odsperf.account_transaction')) AS total,
+         pg_size_pretty(pg_relation_size('odsperf.account_transaction'))       AS table_only,
+         pg_size_pretty(pg_indexes_size('odsperf.account_transaction'))        AS indexes;"
+```
+
+**MongoDB:**
+```bash
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" --eval "
+  const col = db.account_transaction;
+  print('Total:', col.countDocuments());
+  const r = col.aggregate([{\$group:{_id:null,min:{\$min:'\$dtrans'},max:{\$max:'\$dtrans'}}}]).toArray();
+  printjson(r[0]);
+  printjson(db.runCommand({collStats:'account_transaction',scale:1048576})).storageSize + ' MB';
+"
 ```
 
 ---
