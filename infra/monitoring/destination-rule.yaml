@@ -1,0 +1,25 @@
+# =============================================================================
+# DestinationRule - Disable mTLS for monitoring services
+# =============================================================================
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: prometheus-disable-mtls
+  namespace: monitoring
+spec:
+  host: kube-prometheus-stack-prometheus.monitoring.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE  # Force plain HTTP, no TLS
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: grafana-disable-mtls
+  namespace: monitoring
+spec:
+  host: kube-prometheus-stack-grafana.monitoring.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE  # Force plain HTTP, no TLS

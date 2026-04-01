@@ -1,0 +1,29 @@
+# =============================================================================
+# PeerAuthentication - Disable mTLS for monitoring services
+# =============================================================================
+# Grafana - Allow Gateway access without mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: grafana-mtls-disable
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  mtls:
+    mode: PERMISSIVE  # Allow both mTLS and plain HTTP
+
+---
+# Prometheus - Allow Grafana to query without mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: prometheus-mtls-disable
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  mtls:
+    mode: PERMISSIVE  # Allow both mTLS and plain HTTP

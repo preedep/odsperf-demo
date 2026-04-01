@@ -1,0 +1,11 @@
+# =============================================================================
+# PeerAuthentication - Disable mTLS for entire monitoring namespace
+# =============================================================================
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: monitoring-namespace-mtls-disable
+  namespace: monitoring
+spec:
+  mtls:
+    mode: PERMISSIVE  # Allow both mTLS and plain HTTP for all services
