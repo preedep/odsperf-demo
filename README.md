@@ -11,8 +11,9 @@
 - [ความต้องการของระบบ (Prerequisites)](#ความต้องการของระบบ-prerequisites)
 - [Step 1: ติดตั้ง Infrastructure](#step-1-ติดตั้ง-infrastructure)
 - [Step 2: Database Schema](#step-2-database-schema)
-- [Step 3: Build & Deploy ODS Service](#step-3-build--deploy-ods-service)
-- [Step 4: ทดสอบ API](#step-4-ทดสอบ-api)
+- [Step 3: Generate Mock Data](#step-3-generate-mock-data)
+- [Step 4: Build & Deploy ODS Service](#step-4-build--deploy-ods-service)
+- [Step 5: ทดสอบ API](#step-5-ทดสอบ-api)
 - [การตรวจสอบสถานะ](#การตรวจสอบสถานะ)
 - [การเข้าถึง UI ต่าง ๆ](#การเข้าถึง-ui-ต่าง-ๆ)
 - [Architecture Overview](#architecture-overview)
@@ -29,6 +30,7 @@ odsperf-demo/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
 │   └── api-reference.md                # REST API specification
 ├── scripts/
+│   ├── generate-mock-data.sh           # Build + รัน mock data generator (PostgreSQL)
 │   └── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -57,11 +59,13 @@ odsperf-demo/
 │   ├── db/
 │   │   ├── postgres.rs                 # PgPoolOptions::connect()
 │   │   └── mongodb.rs                  # Client::with_uri_str() + ping
-│   └── handlers/
-│       ├── mod.rs                      # Router + middleware stack
-│       ├── health.rs                   # GET  /health
-│       ├── pg.rs                       # POST /v1/query-pg
-│       └── mongo.rs                    # POST /v1/query-mongo
+│   ├── handlers/
+│   │   ├── mod.rs                      # Router + middleware stack
+│   │   ├── health.rs                   # GET  /health
+│   │   ├── pg.rs                       # POST /v1/query-pg
+│   │   └── mongo.rs                    # POST /v1/query-mongo
+│   └── bin/
+│       └── generate_mock_data.rs       # Binary: insert 1M records → PostgreSQL
 ├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
@@ -194,9 +198,103 @@ mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 
 ---
 
-## Step 3: Build & Deploy ODS Service
+## Step 3: Generate Mock Data
 
-### 3.1 Build Docker Image
+สร้างข้อมูลทดสอบสำหรับ benchmark ก่อน deploy ODS Service
+
+### ภาพรวม
+
+| เครื่องมือ                    | ภาษา | Target      | Records    |
+|-----------------------------|------|-------------|-----------|
+| `src/bin/generate_mock_data.rs` | Rust | PostgreSQL  | 1,000,000 |
+
+> ℹ️ MongoDB ใช้ข้อมูลชุดเดียวกัน — sync จาก PostgreSQL ผ่าน ODS Service หรือ import แยกตาม roadmap
+
+### 3.1 เตรียม Port Forward (ถ้าใช้ Kubernetes)
+
+```bash
+# Terminal แยก — ค้างไว้ตลอดการ generate
+cd infra && make port-forward-postgresql
+```
+
+### 3.2 รัน Generator ผ่าน Shell Script
+
+```bash
+# รันจาก project root
+./scripts/generate-mock-data.sh
+```
+
+Script จะ:
+1. ตรวจสอบ connection ไปยัง PostgreSQL
+2. ตรวจสอบว่า schema (`odsperf.account_transaction`) มีอยู่แล้ว — ถ้าไม่มีจะสร้างอัตโนมัติ
+3. ถ้า table มีข้อมูลอยู่แล้ว จะถามก่อน truncate
+4. Build `generate_mock_data` binary (release mode)
+5. Insert 1,000,000 records แบบ batch (5,000 records/batch)
+6. แสดง summary และ verify จำนวน record
+
+### 3.3 รัน Generator โดยตรง (ไม่ใช้ script)
+
+```bash
+# Build binary
+cargo build --release --bin generate_mock_data
+
+# รันพร้อม custom DATABASE_URL
+DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
+  ./target/release/generate_mock_data
+```
+
+### ตัวอย่าง Output
+
+```
+🚀 Starting PostgreSQL Mock Data Generator
+📊 Target: 1000000 records
+📦 Batch size: 5000
+🔌 Connecting to PostgreSQL...
+✅ Connected successfully
+✓ Batch 1/200   | Inserted:   5000 | Batch time: 0.21s | Total time: 0.21s | Speed: 23810 rec/s
+✓ Batch 2/200   | Inserted:  10000 | Batch time: 0.19s | Total time: 0.40s | Speed: 25000 rec/s
+...
+✓ Batch 200/200 | Inserted: 1000000 | Batch time: 0.20s | Total time: 42.5s | Speed: 23529 rec/s
+
+🎉 Data generation completed!
+📊 Total records inserted: 1000000
+⏱️  Total time: 42.50s
+⚡ Average speed: 23529 records/second
+```
+
+### ข้อมูลที่ Generate
+
+| Field       | รายละเอียด                                              |
+|------------|--------------------------------------------------------|
+| `iacct`    | Random 11-digit account number                         |
+| `dtrans`   | วันที่ random ระหว่าง 2025-01-01 ถึง 2025-12-31        |
+| `camt`     | `C` (Credit) หรือ `D` (Debit) — 50/50                 |
+| `aamount`  | จำนวนเงิน random 1.00 – 10,000.00                     |
+| `abal`     | ยอดคงเหลือ random 10.00 – 100,000.00                  |
+| `cmnemo`   | DEP / WDL / TRF / CHQ / FEE / INT / ATM / POS         |
+| `cchannel` | ATM / INET / MOB / BRNC                               |
+
+### ตรวจสอบข้อมูลหลัง Generate
+
+```bash
+# นับ records
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
+  -c "SELECT COUNT(*) FROM odsperf.account_transaction;"
+
+# ดู date range
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
+  -c "SELECT MIN(dtrans), MAX(dtrans) FROM odsperf.account_transaction;"
+
+# ดูตัวอย่างข้อมูล
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
+  -c "SELECT iacct, dtrans, camt, aamount, cmnemo FROM odsperf.account_transaction LIMIT 5;"
+```
+
+---
+
+## Step 4: Build & Deploy ODS Service
+
+### 4.1 Build Docker Image
 
 ```bash
 # รันจาก project root (ที่มี Dockerfile)
@@ -211,7 +309,7 @@ docker build -t odsperf-demo:latest .
 docker images odsperf-demo
 ```
 
-### 3.2 Deploy ลง Kubernetes
+### 4.2 Deploy ลง Kubernetes
 
 ```bash
 kubectl apply -f infra/ods-service/deployment.yaml
@@ -230,7 +328,7 @@ kubectl get pods -n ods-service -w
 kubectl logs -n ods-service -l app=ods-service -f
 ```
 
-### 3.3 เพิ่ม /etc/hosts
+### 4.3 เพิ่ม /etc/hosts
 
 ```bash
 # ดู Istio Gateway IP
@@ -253,7 +351,7 @@ echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hos
 
 ---
 
-## Step 4: ทดสอบ API
+## Step 5: ทดสอบ API
 
 ดู API specification เต็มที่ [docs/api-reference.md](docs/api-reference.md)
 
