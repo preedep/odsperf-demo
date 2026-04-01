@@ -169,9 +169,10 @@ if [ "$DO_MONGO" = true ]; then
     log_info "MongoDB already has ${EXISTING} documents"
     read -p "Delete all and reload? (y/N): " -n 1 -r; echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+      log_info "Dropping collection (faster than deleteMany)..."
       mongosh "$MONGODB_URI" --quiet --eval \
-        "db.getSiblingDB('${MONGODB_DB}').account_transaction.deleteMany({})" > /dev/null
-      log_ok "Collection cleared"
+        "db.getSiblingDB('${MONGODB_DB}').account_transaction.drop()" > /dev/null 2>&1
+      log_ok "Collection dropped"
     else
       log_info "Skipping MongoDB load (existing data kept)"
       DO_MONGO=false
