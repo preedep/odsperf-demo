@@ -56,12 +56,12 @@ log_info()    { printf "${YELLOW}ℹ${NC}  %s\n" "$1"; }
 
 build_bin() {
   local bin="$1"
-  log_info "Building ${bin} (${BUILD_MODE})..."
+  log_info "Building ${bin} (${BUILD_MODE})..." >&2
   if [ "$BUILD_MODE" = "release" ]; then
-    cargo build --release --bin "$bin" 2>&1 | tail -3
+    cargo build --release --bin "$bin" 2>&1 | tail -3 >&2
     echo "target/release/${bin}"
   else
-    cargo build --bin "$bin" 2>&1 | tail -3
+    cargo build --bin "$bin" 2>&1 | tail -3 >&2
     echo "target/debug/${bin}"
   fi
 }
