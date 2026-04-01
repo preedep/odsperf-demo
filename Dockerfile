@@ -21,14 +21,14 @@ RUN apt-get update && apt-get install -y \
 #   3. Replace with real source → only re-compiles changed code
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main(){}' > src/main.rs
-RUN cargo build --release --locked
+RUN cargo build --release --locked --bin odsperf-demo
 RUN rm -rf src
 
-# Copy real source and rebuild
+# Copy real source and rebuild (only main binary, not bin/ utilities)
 COPY src ./src
 # Touch main.rs so Cargo detects the change
 RUN touch src/main.rs
-RUN cargo build --release --locked
+RUN cargo build --release --locked --bin odsperf-demo
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
