@@ -79,6 +79,7 @@ help:
 	@echo "    istio              Install Istio via Helm"
 	@echo "    gateway            Apply Istio Gateway + HTTPRoute resources"
 	@echo "    monitoring         Install kube-prometheus-stack (Prometheus + Grafana)"
+	@echo "    monitoring-mtls    Configure Istio mTLS for monitoring (fix Grafana dashboards)"
 	@echo "    postgresql         Install PostgreSQL  -> namespace: $(NS_PG)"
 	@echo "    mongodb            Install MongoDB     -> namespace: $(NS_MONGO)"
 	@echo ""
@@ -119,7 +120,7 @@ prerequisites:
 # ALL - Deploy everything in order
 # =============================================================================
 .PHONY: all
-all: prerequisites gateway-api-crds namespaces istio gateway monitoring postgresql mongodb
+all: prerequisites gateway-api-crds namespaces istio gateway monitoring monitoring-mtls postgresql mongodb
 	@echo ""
 	$(call log_info,==========================================)
 	$(call log_info,All infrastructure deployed successfully!)
@@ -199,6 +200,20 @@ monitoring:
 		--wait \
 		--timeout 10m
 	$(call log_info,Monitoring stack installed)
+
+# =============================================================================
+# STEP 5b: Monitoring mTLS Configuration
+# =============================================================================
+.PHONY: monitoring-mtls
+monitoring-mtls:
+	$(call log_info,[5b/6] Configuring Istio mTLS for monitoring namespace...)
+	@echo "Waiting for Grafana and Prometheus pods to be ready..."
+	@kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n $(NS_MONITORING) --timeout=120s 2>/dev/null || true
+	@kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n $(NS_MONITORING) --timeout=120s 2>/dev/null || true
+	kubectl apply -f monitoring/peer-authentication.yaml
+	kubectl apply -f monitoring/namespace-mtls-disable.yaml
+	kubectl apply -f monitoring/destination-rule.yaml
+	$(call log_info,mTLS configuration applied - Grafana dashboards should work correctly)
 
 # =============================================================================
 # STEP 6a: PostgreSQL  (namespace: database-pg)
