@@ -7,6 +7,7 @@
 
 ## สารบัญ
 
+- [Quick Start](#quick-start)
 - [โครงสร้างโปรเจค](#โครงสร้างโปรเจค)
 - [ความต้องการของระบบ (Prerequisites)](#ความต้องการของระบบ-prerequisites)
 - [Step 1: ติดตั้ง Infrastructure](#step-1-ติดตั้ง-infrastructure)
@@ -22,6 +23,46 @@
 
 ---
 
+## Quick Start
+
+สำหรับผู้ที่ต้องการติดตั้งและทดสอบอย่างรวดเร็ว (ใช้เวลาประมาณ 20-30 นาที):
+
+```bash
+# 1. ติดตั้ง Infrastructure (Istio, Gateway, Monitoring, Databases)
+cd infra
+make all
+cd ..
+
+# 2. เพิ่ม /etc/hosts
+echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
+
+# 3. Port forward databases
+kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
+kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
+
+# 4. สร้าง PostgreSQL schema
+./scripts/init-pg-schema.sh
+
+# 5. Generate และ load ข้อมูล (1M rows)
+./scripts/seed.sh
+
+# 6. Build และ Deploy ODS Service
+./scripts/deploy-ods.sh
+
+# 7. ทดสอบ API
+./scripts/test-api.sh --repeat 10
+
+# 8. เปิด Grafana Dashboard
+# http://grafana.local (admin/admin)
+```
+
+**หมายเหตุ:**
+- Build Docker image ครั้งแรกใช้เวลา 5-10 นาที
+- Seed ข้อมูล 1M rows ใช้เวลาประมาณ 2-3 นาที
+- ดูรายละเอียดแต่ละ step ด้านล่าง
+
+---
+
 ## โครงสร้างโปรเจค
 
 ```
@@ -32,7 +73,9 @@ odsperf-demo/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
 │   └── api-reference.md                # REST API specification
 ├── scripts/
+│   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
+│   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
 │   └── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -356,45 +399,61 @@ mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" --eval "
 
 ## Step 4: Build & Deploy ODS Service
 
-### 4.1 Build Docker Image
+### 4.1 Deploy ด้วย Script (แนะนำ)
 
 ```bash
-# รันจาก project root (ที่มี Dockerfile)
-docker build -t odsperf-demo:latest .
+./scripts/deploy-ods.sh
 ```
 
-> ✅ Dockerfile ใช้ `rust:1.88-slim` (MSRV ถูกต้องสำหรับ darling, time, serde_with)
+Script จะทำงานอัตโนมัติ:
+1. ✅ Build Docker image `odsperf-demo:latest`
+2. ✅ Deploy ลง namespace `ods-service`
+3. ✅ รอให้ pod พร้อม (timeout 120s)
+4. ✅ แสดงสถานะ pod, service, และ logs
+
+**Options:**
+```bash
+./scripts/deploy-ods.sh --skip-build   # Deploy only (ใช้ image ที่มีอยู่)
+./scripts/deploy-ods.sh --build-only   # Build only (ไม่ deploy)
+```
+
 > ⏱ Build ครั้งแรกประมาณ 5–10 นาที (compile + download crates)
 
-ตรวจสอบ image:
-```bash
-docker images odsperf-demo
-```
-
-### 4.2 Deploy ลง Kubernetes
+### 4.2 Deploy แบบ Manual (ทางเลือก)
 
 ```bash
+# 1. Build Docker image
+docker build -t odsperf-demo:latest .
+
+# 2. สำหรับ minikube (ถ้าใช้)
+eval $(minikube docker-env)
+docker build -t odsperf-demo:latest .
+
+# 3. Deploy to Kubernetes
 kubectl apply -f infra/ods-service/deployment.yaml
 kubectl apply -f infra/ods-service/service.yaml
-kubectl apply -f infra/istio/httproute.yaml   # ถ้ายังไม่ได้ apply
-```
 
-ตรวจสอบ Pod ขึ้น:
-```bash
+# 4. ตรวจสอบสถานะ
 kubectl get pods -n ods-service -w
-# ควรเห็น: ods-service-xxxx   2/2   Running
-```
-
-ดู logs:
-```bash
 kubectl logs -n ods-service -l app=ods-service -f
 ```
 
-### 4.3 เพิ่ม /etc/hosts
+### 4.3 ทดสอบ Service
+
+```bash
+# Test health endpoint (port-forward)
+kubectl port-forward -n ods-service svc/ods-service 8080:80 &
+curl http://localhost:8080/health
+
+# Test via Istio Gateway (ต้องเพิ่ม /etc/hosts ก่อน)
+curl http://ods.local/health
+```
+
+### 4.4 เพิ่ม /etc/hosts (ถ้ายังไม่ได้ทำ)
 
 ```bash
 # ดู Istio Gateway IP
-kubectl get svc -n istio-system
+kubectl get svc -n ingress
 
 # Docker Desktop ใช้ 127.0.0.1
 echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
