@@ -1,11 +1,11 @@
 # =============================================================================
-# Multi-stage build — Rust 1.85 (2024 edition)
+# Multi-stage build — Rust 1.88+ (MSRV required by darling, time, serde_with)
 # Stage 1: builder  — compile release binary
 # Stage 2: runtime  — minimal debian-slim image
 # =============================================================================
 
 # ── Stage 1: Build ───────────────────────────────────────────────────────────
-FROM rust:1.85-slim AS builder
+FROM rust:1.88-slim AS builder
 
 WORKDIR /app
 
