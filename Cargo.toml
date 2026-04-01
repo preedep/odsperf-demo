@@ -61,3 +61,10 @@ anyhow    = "1"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 csv  = "1"
+
+# ── Release Profile Optimization ──────────────────────────────────────────
+[profile.release]
+strip = true          # Strip debug symbols (reduces binary size by ~50-70%)
+lto = true            # Link-Time Optimization (smaller + faster)
+codegen-units = 1     # Better optimization (slower compile, smaller binary)
+opt-level = "z"       # Optimize for size (alternative: "s" or 3 for speed)

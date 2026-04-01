@@ -40,10 +40,12 @@ echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hos
 kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
 
-# 4. สร้าง PostgreSQL schema
-./scripts/init-pg-schema.sh
+# 4. สร้าง Database schema
+./scripts/init-pg-schema.sh       # PostgreSQL schema + table
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" infra/mongodb/init-schema.js
+./scripts/init-mongo-indexes.sh   # MongoDB indexes
 
-# 5. Generate และ load ข้อมูล (1M rows)
+# 5. Generate และ load ข้อมูล (1M rows ชุดเดียวกันทั้ง 2 DB)
 ./scripts/seed.sh
 
 # 6. Build และ Deploy ODS Service
@@ -74,9 +76,10 @@ odsperf-demo/
 │   └── api-reference.md                # REST API specification
 ├── scripts/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
+│   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
 │   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
-│   ├── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
+│   ├── test-api.sh                     # Shell script ทดสอบ API + Comparison summary
 │   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -232,14 +235,15 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 
 ### MongoDB
 
-สร้าง collection พร้อม `$jsonSchema` validator (strict validation ระดับ DB):
+สร้าง collection พร้อม `$jsonSchema` validator และ indexes:
 
 ```bash
-# Port-forward แล้วรัน script
-make port-forward-mongodb &
-sleep 2
+# สร้าง collection + schema validator
 mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
-  mongodb/init-schema.js   # รันจากภายใน infra/
+  infra/mongodb/init-schema.js   # รันจาก project root
+
+# สร้าง indexes
+./scripts/init-mongo-indexes.sh
 ```
 
 ดูรายละเอียด schema ทั้งหมดได้ที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
