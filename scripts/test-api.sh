@@ -155,6 +155,7 @@ call_api() {
 run_benchmark() {
   local label="$1"
   local endpoint="$2"
+  local result_var="$3"  # Variable name to store results
 
   log_section "${label}"
   log_info "Account  : ${ACCOUNT_NO}"
@@ -182,11 +183,25 @@ run_benchmark() {
     [[ "$REPEAT" -gt 1 && "$i" -lt "$REPEAT" ]] && sleep 0.2
   done
 
+  # Calculate average
+  local avg_ms="N/A"
+  if [[ "$success" -gt 0 ]]; then
+    avg_ms=$(echo "scale=2; $total_ms / $success" | bc)
+  fi
+
+  # Store results in associative array format
+  if [[ -n "$result_var" ]]; then
+    eval "${result_var}_success=$success"
+    eval "${result_var}_fail=$fail"
+    eval "${result_var}_min=$min_ms"
+    eval "${result_var}_avg=$avg_ms"
+    eval "${result_var}_max=$max_ms"
+  fi
+
   if [[ "$REPEAT" -gt 1 ]]; then
     printf "\n${BOLD}Summary${RESET} (%s)\n" "$label"
     printf "  Success : %d / %d\n" "$success" "$REPEAT"
     if [[ "$success" -gt 0 ]]; then
-      avg_ms=$(echo "scale=2; $total_ms / $success" | bc)
       printf "  Latency : min=%-8sms  avg=%-8sms  max=%sms\n" "$min_ms" "$avg_ms" "$max_ms"
     fi
   fi
@@ -203,7 +218,51 @@ log_info "Date     : $(date '+%Y-%m-%d %H:%M:%S')"
 
 check_health
 
-[[ "$RUN_PG"    == "true" ]] && run_benchmark "PostgreSQL  /v1/query-pg"    "/v1/query-pg"
-[[ "$RUN_MONGO" == "true" ]] && run_benchmark "MongoDB     /v1/query-mongo" "/v1/query-mongo"
+[[ "$RUN_PG"    == "true" ]] && run_benchmark "PostgreSQL  /v1/query-pg"    "/v1/query-pg"    "PG_RESULT"
+[[ "$RUN_MONGO" == "true" ]] && run_benchmark "MongoDB     /v1/query-mongo" "/v1/query-mongo" "MONGO_RESULT"
+
+# ── Comparison Summary ────────────────────────────────────────────────────────
+if [[ "$RUN_PG" == "true" && "$RUN_MONGO" == "true" ]]; then
+  printf "\n${BOLD}${CYAN}"
+  printf "╔══════════════════════════════════════════════════════════════════╗\n"
+  printf "║              Performance Comparison Summary                      ║\n"
+  printf "╚══════════════════════════════════════════════════════════════════╝\n"
+  printf "${RESET}"
+  
+  printf "\n${BOLD}%-15s | %10s | %10s | %10s | %10s${RESET}\n" "Database" "Min (ms)" "Avg (ms)" "Max (ms)" "Success"
+  printf "${BOLD}%s${RESET}\n" "─────────────────────────────────────────────────────────────────────"
+  
+  # PostgreSQL row
+  printf "%-15s | %10s | %10s | %10s | %4d/%d\n" \
+    "PostgreSQL" \
+    "${PG_RESULT_min}" \
+    "${PG_RESULT_avg}" \
+    "${PG_RESULT_max}" \
+    "${PG_RESULT_success}" \
+    "$REPEAT"
+  
+  # MongoDB row
+  printf "%-15s | %10s | %10s | %10s | %4d/%d\n" \
+    "MongoDB" \
+    "${MONGO_RESULT_min}" \
+    "${MONGO_RESULT_avg}" \
+    "${MONGO_RESULT_max}" \
+    "${MONGO_RESULT_success}" \
+    "$REPEAT"
+  
+  # Winner calculation (if both succeeded)
+  if [[ "${PG_RESULT_success}" -gt 0 && "${MONGO_RESULT_success}" -gt 0 ]]; then
+    printf "\n${BOLD}Winner (by avg latency):${RESET} "
+    if (( $(echo "${PG_RESULT_avg} < ${MONGO_RESULT_avg}" | bc -l) )); then
+      speedup=$(echo "scale=2; ${MONGO_RESULT_avg} / ${PG_RESULT_avg}" | bc)
+      printf "${GREEN}PostgreSQL${RESET} (%.2fx faster)\n" "$speedup"
+    elif (( $(echo "${MONGO_RESULT_avg} < ${PG_RESULT_avg}" | bc -l) )); then
+      speedup=$(echo "scale=2; ${PG_RESULT_avg} / ${MONGO_RESULT_avg}" | bc)
+      printf "${GREEN}MongoDB${RESET} (%.2fx faster)\n" "$speedup"
+    else
+      printf "${YELLOW}Tie${RESET}\n"
+    fi
+  fi
+fi
 
 printf "\n${GREEN}${BOLD}Done.${RESET}\n\n"
