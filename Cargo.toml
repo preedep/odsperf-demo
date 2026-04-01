@@ -7,6 +7,10 @@ edition = "2024"
 name = "odsperf-demo"
 path = "src/main.rs"
 
+[[bin]]
+name = "generate_mock_data"
+path = "src/bin/generate_mock_data.rs"
+
 [dependencies]
 # ── Web framework ──────────────────────────────────────────────────────────
 axum              = { version = "0.7",  features = ["macros"] }
@@ -38,3 +42,4 @@ anyhow    = "1"
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
