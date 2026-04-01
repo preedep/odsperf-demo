@@ -76,7 +76,8 @@ odsperf-demo/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
 │   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
-│   └── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
+│   ├── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
+│   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
 │   ├── istio/
@@ -495,6 +496,41 @@ kubectl port-forward svc/ods-service 8080:80 -n ods-service &
 
 # ดู response เต็ม
 ./scripts/test-api.sh --verbose
+```
+
+### เปรียบเทียบ Disk Usage
+
+```bash
+./scripts/compare-disk-usage.sh
+```
+
+Script จะแสดง:
+- ✅ จำนวน rows/documents
+- ✅ ขนาด data, indexes, และ total size
+- ✅ รายละเอียด indexes แต่ละตัว
+- ✅ เปรียบเทียบ storage efficiency (% difference)
+- ✅ Bytes per row/document
+
+**ตัวอย่าง Output:**
+```
+══════ Comparison Summary ══════
+╔══════════════════════════════════════════════════════════════════╗
+║                    Disk Usage Comparison                         ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Metric               |     PostgreSQL |        MongoDB
+─────────────────────────────────────────────────────────────────
+Rows/Documents       |      1,000,000 |      1,000,000
+Data Size            |         123 MB |         156 MB
+Index Size           |          45 MB |          38 MB
+Total Size           |         168 MB |         194 MB
+
+Storage Efficiency:
+  PostgreSQL uses less disk space
+  MongoDB uses 15.5% more space (26 MB larger)
+
+  PostgreSQL: 176.00 bytes/row
+  MongoDB   : 203.00 bytes/document
 ```
 
 ### curl โดยตรง
