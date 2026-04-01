@@ -10,11 +10,14 @@
 - [โครงสร้างโปรเจค](#โครงสร้างโปรเจค)
 - [ความต้องการของระบบ (Prerequisites)](#ความต้องการของระบบ-prerequisites)
 - [Step 1: ติดตั้ง Infrastructure](#step-1-ติดตั้ง-infrastructure)
+- [Step 2: Database Schema](#step-2-database-schema)
+- [Step 3: Build & Deploy ODS Service](#step-3-build--deploy-ods-service)
+- [Step 4: ทดสอบ API](#step-4-ทดสอบ-api)
 - [การตรวจสอบสถานะ](#การตรวจสอบสถานะ)
 - [การเข้าถึง UI ต่าง ๆ](#การเข้าถึง-ui-ต่าง-ๆ)
-- [Step 2: ODS Service (Rust + Axum)](#step-2-ods-service-rust--axum)
-- [Step 3: Database Schema](#step-3-database-schema)
+- [Architecture Overview](#architecture-overview)
 - [การลบ Infrastructure ทั้งหมด](#การลบ-infrastructure-ทั้งหมด)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -23,36 +26,56 @@
 ```
 odsperf-demo/
 ├── docs/
-│   └── schema-account-transaction.md  # DB2→PostgreSQL schema reference
-├── infra/                          # Infrastructure as Code
-│   ├── namespaces.yaml             # Kubernetes Namespaces + ResourceQuotas
+│   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
+│   └── api-reference.md                # REST API specification
+├── scripts/
+│   └── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
+├── infra/                              # Infrastructure as Code
+│   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
 │   ├── istio/
-│   │   ├── gateway.yaml            # Istio Gateway (Gateway API)
-│   │   ├── httproute.yaml          # HTTP Routes (Grafana, Prometheus, ODS)
-│   │   └── reference-grants.yaml   # Cross-namespace permissions
+│   │   ├── gateway.yaml                # Istio Gateway (Gateway API v1)
+│   │   ├── httproute.yaml              # HTTP Routes: Grafana, Prometheus, ODS
+│   │   └── reference-grants.yaml       # Cross-namespace ReferenceGrants
 │   ├── monitoring/
-│   │   └── kube-prometheus-values.yaml  # Prometheus + Grafana config
+│   │   └── kube-prometheus-values.yaml # Prometheus + Grafana Helm values
 │   ├── postgresql/
-│   │   ├── values.yaml             # PostgreSQL Helm values
-│   │   └── init-schema.sql         # DDL — account_transaction table
+│   │   ├── values.yaml                 # PostgreSQL Helm values
+│   │   └── init-schema.sql             # DDL — odsperf.account_transaction
 │   ├── mongodb/
-│   │   └── values.yaml             # MongoDB Helm values
-│   └── Makefile                    # Orchestrate deployment
+│   │   ├── values.yaml                 # MongoDB Helm values
+│   │   └── init-schema.js              # Collection + $jsonSchema validator
+│   ├── ods-service/
+│   │   ├── deployment.yaml             # Deployment: odsperf-demo image
+│   │   └── service.yaml                # ClusterIP Service port 80→8080
+│   └── Makefile                        # Orchestrate deployment commands
 ├── src/
-│   └── main.rs                     # Rust application (Step 3)
+│   ├── main.rs                         # Entry point: init logging, DB, server
+│   ├── config.rs                       # Config จาก environment variables
+│   ├── error.rs                        # AppError → HTTP response (thiserror)
+│   ├── state.rs                        # AppState: PgPool + MongoDB Database
+│   ├── models.rs                       # Request / Response / DTO structs
+│   ├── db/
+│   │   ├── postgres.rs                 # PgPoolOptions::connect()
+│   │   └── mongodb.rs                  # Client::with_uri_str() + ping
+│   └── handlers/
+│       ├── mod.rs                      # Router + middleware stack
+│       ├── health.rs                   # GET  /health
+│       ├── pg.rs                       # POST /v1/query-pg
+│       └── mongo.rs                    # POST /v1/query-mongo
+├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
 ```
 
 ### Namespace Layout
 
-| Namespace        | วัตถุประสงค์                            | Istio Sidecar |
-|-----------------|----------------------------------------|---------------|
-| `ingress`       | Istio Gateway — รับ HTTP traffic ทั้งหมด | Enabled       |
-| `ods-service`   | Rust ODS Application (Step 2)          | Enabled       |
-| `monitoring`    | Prometheus + Grafana                   | Enabled       |
-| `database-pg`   | PostgreSQL + postgres_exporter         | Disabled      |
-| `database-mongo`| MongoDB + mongodb_exporter             | Disabled      |
+| Namespace         | วัตถุประสงค์                              | Istio Sidecar |
+|------------------|------------------------------------------|---------------|
+| `ingress`        | Istio Gateway — รับ HTTP traffic ทั้งหมด  | Enabled       |
+| `ods-service`    | Rust ODS Application                     | Enabled       |
+| `monitoring`     | Prometheus + Grafana                     | Enabled       |
+| `database-pg`    | PostgreSQL + postgres_exporter           | Disabled      |
+| `database-mongo` | MongoDB + mongodb_exporter               | Disabled      |
 
 > แยก namespace ระหว่าง PostgreSQL และ MongoDB เพื่อให้ ResourceQuota เท่ากัน (fair benchmark) และ lifecycle เป็นอิสระต่อกัน
 
@@ -62,37 +85,30 @@ odsperf-demo/
 
 ### เครื่องมือที่ต้องติดตั้ง
 
-| เครื่องมือ   | Version แนะนำ | วิธีติดตั้ง |
-|-------------|--------------|------------|
-| `kubectl`   | ≥ 1.29       | https://kubernetes.io/docs/tasks/tools/ |
-| `helm`      | ≥ 3.14       | https://helm.sh/docs/intro/install/ |
-| `istioctl`  | 1.22.x       | https://istio.io/latest/docs/setup/getting-started/ |
-| `Rust`      | ≥ 1.78 (stable) | https://rustup.rs |
+| เครื่องมือ   | Version แนะนำ    | วิธีติดตั้ง |
+|-------------|----------------|------------|
+| `kubectl`   | ≥ 1.29         | https://kubernetes.io/docs/tasks/tools/ |
+| `helm`      | ≥ 3.14         | https://helm.sh/docs/intro/install/ |
+| `istioctl`  | 1.28.x         | https://istio.io/latest/docs/setup/getting-started/ |
+| `Rust`      | ≥ 1.88 (stable) | https://rustup.rs |
+| `Docker`    | ≥ 24.x         | https://docs.docker.com/get-docker/ |
+
+> ⚠️ Rust ≥ 1.88 จำเป็นสำหรับ dependency MSRV: `darling 0.23`, `time 0.3.47`, `serde_with 3.18`
 
 ### Kubernetes Cluster
 
-เลือกอย่างใดอย่างหนึ่ง:
-
-**Docker Desktop** (macOS / Windows)
+**Docker Desktop** (macOS / Windows) — แนะนำสำหรับ local development:
 1. เปิด Docker Desktop
-2. ไปที่ Settings → Kubernetes → Enable Kubernetes
-3. กด Apply & Restart
+2. Settings → Kubernetes → Enable Kubernetes → Apply & Restart
+3. Settings → General → เปิด **"Use containerd for pulling and storing images"** → Apply & Restart
 4. รอจนขึ้น `Kubernetes running`
 
-**minikube** (Linux / macOS / Windows)
+> ⚠️ ต้องเปิด containerd image store เพื่อให้ `docker build` image ถูก share ให้ Kubernetes ได้โดยตรง
+
+**minikube** (Linux / macOS / Windows):
 ```bash
-# ติดตั้ง minikube
-brew install minikube   # macOS
-# หรือ: https://minikube.sigs.k8s.io/docs/start/
-
-# เริ่ม cluster (แนะนำ resource ขั้นต่ำ)
-minikube start \
-  --cpus=4 \
-  --memory=8192 \
-  --driver=docker
-
-# เปิด LoadBalancer support สำหรับ Gateway
-minikube tunnel   # รันใน terminal แยก
+minikube start --cpus=4 --memory=8192 --driver=docker
+minikube tunnel   # รันใน terminal แยก (สำหรับ LoadBalancer)
 ```
 
 ### ตรวจสอบ Resource ขั้นต่ำ
@@ -107,8 +123,6 @@ minikube tunnel   # รันใน terminal แยก
 
 ## Step 1: ติดตั้ง Infrastructure
 
-เข้าไปที่ไดเรกทอรี `infra/` ก่อนรัน command ทั้งหมด:
-
 ```bash
 cd infra
 ```
@@ -119,289 +133,45 @@ cd infra
 make prerequisites
 ```
 
-ผลลัพธ์ที่ควรได้:
-```
-[INFO] All prerequisites satisfied ✓
-  kubectl  : Client Version: v1.30.x
-  helm     : v3.15.x
-  istioctl : 1.22.x
-  context  : docker-desktop
-```
-
 ### 1.2 Deploy ทั้งหมดในคำสั่งเดียว
 
 ```bash
 make all
 ```
 
-คำสั่งนี้จะรัน 6 ขั้นตอนตามลำดับ:
-1. ติดตั้ง Gateway API CRDs
-2. สร้าง Namespaces
-3. ติดตั้ง Istio
-4. Apply Gateway + HTTPRoutes
-5. ติดตั้ง Prometheus + Grafana
-6. ติดตั้ง PostgreSQL + MongoDB
+รัน 6 ขั้นตอนตามลำดับ: Gateway API CRDs → Namespaces → Istio → Gateway/HTTPRoutes → Monitoring → Databases
 
-> ⏱ ใช้เวลาประมาณ 5-10 นาที ขึ้นอยู่กับความเร็ว Internet
-
----
+> ⏱ ใช้เวลาประมาณ 5–10 นาที
 
 ### หรือ Deploy ทีละขั้นตอน
 
-#### ขั้นตอนที่ 1: Gateway API CRDs
-
 ```bash
-make gateway-api-crds
+make gateway-api-crds   # ติดตั้ง CRD ของ Kubernetes Gateway API
+make namespaces         # สร้าง 5 namespaces
+make istio              # ติดตั้ง Istio ผ่าน Helm
+make gateway            # Apply Gateway + ReferenceGrants + HTTPRoutes
+make monitoring         # ติดตั้ง kube-prometheus-stack (Prometheus + Grafana)
+make postgresql         # ติดตั้ง PostgreSQL + postgres_exporter
+make mongodb            # ติดตั้ง MongoDB + mongodb_exporter
 ```
 
-ติดตั้ง CRD ของ Kubernetes Gateway API (stable v1.1.0)
-ซึ่ง Istio ใช้แทน IngressGateway แบบเก่า
+### Connection Strings (ภายใน Cluster)
 
-#### ขั้นตอนที่ 2: สร้าง Namespaces
-
-```bash
-make namespaces
 ```
-
-สร้าง 4 namespaces: `ingress`, `ods-service`, `monitoring`, `databases`
-
-#### ขั้นตอนที่ 3: ติดตั้ง Istio
-
-```bash
-make istio
-```
-
-ติดตั้ง Istio ผ่าน Helm (istio-base + istiod) พร้อมเปิดใช้งาน Gateway API
-
-#### ขั้นตอนที่ 4: Apply Gateway Resources
-
-```bash
-make gateway
-```
-
-สร้าง Istio Gateway + ReferenceGrants + HTTPRoutes สำหรับ:
-- `grafana.local` → Grafana
-- `prometheus.local` → Prometheus
-- `ods.local` → ODS Service (Step 2)
-
-#### ขั้นตอนที่ 5: ติดตั้ง Monitoring Stack
-
-```bash
-make monitoring
-```
-
-ติดตั้ง `kube-prometheus-stack` ซึ่งประกอบด้วย:
-- **Prometheus** — เก็บ metrics จาก PostgreSQL exporter และ MongoDB exporter
-- **Grafana** — แสดง dashboard (pre-loaded: PostgreSQL, MongoDB, Kubernetes)
-
-#### ขั้นตอนที่ 6: ติดตั้ง Databases
-
-```bash
-make postgresql   # ติดตั้ง PostgreSQL พร้อม postgres_exporter
-make mongodb      # ติดตั้ง MongoDB พร้อม mongodb_exporter
+PostgreSQL : postgresql://odsuser:odspassword@postgresql.database-pg.svc.cluster.local:5432/odsperf
+MongoDB    : mongodb://odsuser:odspassword@mongodb.database-mongo.svc.cluster.local:27017/odsperf
 ```
 
 ---
 
-## การตรวจสอบสถานะ
-
-### ดู status ทั้งหมด
-
-```bash
-make status
-```
-
-### ตรวจสอบ Pod ทั้งหมด
-
-```bash
-kubectl get pods -n monitoring
-kubectl get pods -n database-pg
-kubectl get pods -n database-mongo
-kubectl get pods -n ingress
-```
-
-ทุก Pod ควรมีสถานะ `Running`:
-```
-NAMESPACE        NAME                                      READY   STATUS
-monitoring       kube-prometheus-stack-grafana-xxx         1/1     Running
-monitoring       kube-prometheus-stack-prometheus-xxx      1/1     Running
-database-pg      postgresql-0                              2/2     Running
-database-mongo   mongodb-0                                 2/2     Running
-```
-
-> ℹ️ PostgreSQL และ MongoDB มี 2/2 containers (app + metrics exporter)
-
-### ตรวจสอบ Gateway
-
-```bash
-kubectl get gateway -n ingress
-kubectl get httproutes -n ingress
-```
-
----
-
-## การเข้าถึง UI ต่าง ๆ
-
-### วิธีที่ 1: Port Forward (ง่ายที่สุด)
-
-```bash
-# Grafana
-make port-forward-grafana
-# เปิด: http://localhost:3000  (admin / admin)
-
-# Prometheus
-make port-forward-prometheus
-# เปิด: http://localhost:9090
-```
-
-### วิธีที่ 2: ผ่าน Gateway (ต้องแก้ /etc/hosts)
-
-```bash
-# ดู Gateway IP
-make gateway-ip
-
-# แสดง hosts entries ที่ต้องเพิ่ม
-make hosts-entry
-```
-
-เพิ่ม hosts ที่ `/etc/hosts` (macOS/Linux) หรือ `C:\Windows\System32\drivers\etc\hosts` (Windows):
-```
-127.0.0.1  grafana.local
-127.0.0.1  prometheus.local
-127.0.0.1  ods.local
-```
-
-> ⚠️ สำหรับ minikube: ต้องรัน `minikube tunnel` ไว้ใน terminal แยก
-> แล้วใช้ IP ที่ได้จาก `make gateway-ip` แทน `127.0.0.1`
-
-จากนั้นเปิด browser:
-| URL                        | บริการ     | Login         |
-|---------------------------|-----------|---------------|
-| http://grafana.local       | Grafana   | admin / admin |
-| http://prometheus.local    | Prometheus | —            |
-
-### Grafana Dashboards ที่ติดตั้งไว้
-
-หลังจาก login Grafana ไปที่ **Dashboards → ODS Performance**:
-
-| Dashboard          | รายละเอียด                                    |
-|-------------------|----------------------------------------------|
-| PostgreSQL         | Query stats, connections, cache hit rate      |
-| MongoDB            | Operations/sec, document reads, latency       |
-| Kubernetes Cluster | CPU, Memory, Pod status                       |
-
----
-
-## Connection Strings
-
-### PostgreSQL (ภายใน Cluster)
-
-```
-postgresql://odsuser:odspassword@postgresql.database-pg.svc.cluster.local:5432/odsperf
-```
-
-### MongoDB (ภายใน Cluster)
-
-```
-mongodb://odsuser:odspassword@mongodb.database-mongo.svc.cluster.local:27017/odsperf
-```
-
-### Connection จาก Local Machine (Port Forward)
-
-```bash
-# Terminal 1: Port forward PostgreSQL
-make port-forward-postgresql
-# Connection: postgresql://odsuser:odspassword@localhost:5432/odsperf
-
-# Terminal 2: Port forward MongoDB
-make port-forward-mongodb
-# Connection: mongodb://odsuser:odspassword@localhost:27017/odsperf
-```
-
----
-
-## Step 2: ODS Service (Rust + Axum)
-
-### โครงสร้าง Source Code
-
-```
-src/
-├── main.rs              # Entry point — init logging, DB, server
-├── config.rs            # Config จาก environment variables
-├── error.rs             # AppError → HTTP response (thiserror)
-├── state.rs             # AppState — shared PgPool + MongoDB Database
-├── models.rs            # Request / Response / PgTransaction / MongoTransaction DTOs
-├── db/
-│   ├── postgres.rs      # PgPoolOptions::connect()
-│   └── mongodb.rs       # Client::with_uri_str() + ping
-└── handlers/
-    ├── mod.rs           # Router + middleware stack
-    ├── health.rs        # GET  /health
-    ├── pg.rs            # POST /v1/query-pg
-    └── mongo.rs         # POST /v1/query-mongo
-```
-
-### Build และ Deploy
-
-```bash
-# 1. Build Docker image (ทำจาก project root)
-docker build -t odsperf-demo:latest .
-
-# 2. Deploy ลง Kubernetes
-kubectl apply -f infra/ods-service/deployment.yaml
-kubectl apply -f infra/ods-service/service.yaml
-
-# 3. Apply HTTPRoute (ถ้ายังไม่ได้ apply)
-kubectl apply -f infra/istio/httproute.yaml
-
-# 4. ตรวจสอบ
-kubectl get pods -n ods-service
-kubectl logs -n ods-service -l app=ods-service -f
-```
-
-### Test API
-
-```bash
-# ผ่าน port-forward
-kubectl port-forward -n ods-service svc/ods-service 8080:80
-
-curl -s -X POST http://localhost:8080/v1/query-pg \
-  -H "Content-Type: application/json" \
-  -d '{
-    "account_no":  "12345678901",
-    "start_month": 1, "start_year": 2025,
-    "end_month":   12, "end_year": 2025
-  }' | jq '{db,total,elapsed_ms}'
-```
-
-ดู API Reference เต็มที่ [docs/api-reference.md](docs/api-reference.md)
-
-### Environment Variables
-
-| Variable         | Required | Default  | Description                        |
-|-----------------|----------|----------|------------------------------------|
-| `DATABASE_URL`  | ✅        | —        | PostgreSQL connection string       |
-| `MONGODB_URI`   | ✅        | —        | MongoDB connection string          |
-| `MONGODB_DB`    | ❌        | odsperf  | MongoDB database name              |
-| `PORT`          | ❌        | 8080     | HTTP listen port                   |
-| `RUST_LOG`      | ❌        | info     | Log level (debug/info/warn/error)  |
-| `RUST_LOG_FORMAT` | ❌     | pretty   | `json` สำหรับ Kubernetes          |
-
----
-
-## Step 3: Database Schema
+## Step 2: Database Schema
 
 ### PostgreSQL
 
-ตาราง ODS แปลงจาก DB2 — ดูรายละเอียดเต็มได้ที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
-
-| Table | Schema | Primary Key | SQL |
-|-------|--------|-------------|-----|
-| `account_transaction` | `odsperf` | `iacct, drun, cseq` | [init-schema.sql](infra/postgresql/init-schema.sql) |
-
-**รัน DDL:**
+ตาราง `odsperf.account_transaction` แปลงจาก DB2 — ดูรายละเอียดที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
 
 ```bash
+# Port-forward แล้วรัน DDL
 make port-forward-postgresql &
 sleep 2
 psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
@@ -410,36 +180,198 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 
 ### MongoDB
 
-Schema สำหรับ MongoDB จะถูกสร้างใน Step 3 (Rust service) — MongoDB เป็น schemaless
-แต่ใช้ collection ชื่อ `account_transaction` ใน database `odsperf` เช่นกัน เพื่อให้ benchmark เปรียบเทียบได้ตรงกัน
-
----
-
-## Step 3: (Coming Soon) — Rust ODS Service
-
-Rust application สำหรับ benchmark และเปรียบเทียบ performance ระหว่าง PostgreSQL และ MongoDB:
-- CRUD operations benchmark
-- Concurrent load testing
-- Latency / Throughput comparison
-- ส่ง custom metrics ไปยัง Prometheus
-
----
-
-## การลบ Infrastructure ทั้งหมด
+สร้าง collection พร้อม `$jsonSchema` validator (strict validation ระดับ DB):
 
 ```bash
-# ลบทุกอย่าง (Helm releases + Namespaces)
-make clean
-
-# ลบเฉพาะ PostgreSQL (และ PVC)
-make clean-pg
-
-# ลบเฉพาะ MongoDB (และ PVC)
-make clean-mongo
+# Port-forward แล้วรัน script
+make port-forward-mongodb &
+sleep 2
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
+  mongodb/init-schema.js   # รันจากภายใน infra/
 ```
 
-> ⚠️ `make clean` จะลบ PersistentVolumeClaim ของ PostgreSQL และ MongoDB ด้วย
-> ข้อมูลจะหายทั้งหมด
+ดูรายละเอียด schema ทั้งหมดได้ที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
+
+---
+
+## Step 3: Build & Deploy ODS Service
+
+### 3.1 Build Docker Image
+
+```bash
+# รันจาก project root (ที่มี Dockerfile)
+docker build -t odsperf-demo:latest .
+```
+
+> ✅ Dockerfile ใช้ `rust:1.88-slim` (MSRV ถูกต้องสำหรับ darling, time, serde_with)
+> ⏱ Build ครั้งแรกประมาณ 5–10 นาที (compile + download crates)
+
+ตรวจสอบ image:
+```bash
+docker images odsperf-demo
+```
+
+### 3.2 Deploy ลง Kubernetes
+
+```bash
+kubectl apply -f infra/ods-service/deployment.yaml
+kubectl apply -f infra/ods-service/service.yaml
+kubectl apply -f infra/istio/httproute.yaml   # ถ้ายังไม่ได้ apply
+```
+
+ตรวจสอบ Pod ขึ้น:
+```bash
+kubectl get pods -n ods-service -w
+# ควรเห็น: ods-service-xxxx   2/2   Running
+```
+
+ดู logs:
+```bash
+kubectl logs -n ods-service -l app=ods-service -f
+```
+
+### 3.3 เพิ่ม /etc/hosts
+
+```bash
+# ดู Istio Gateway IP
+kubectl get svc -n istio-system
+
+# Docker Desktop ใช้ 127.0.0.1
+echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
+```
+
+### Environment Variables
+
+| Variable           | Required | Default   | Description                       |
+|-------------------|----------|-----------|-----------------------------------|
+| `DATABASE_URL`    | ✅        | —         | PostgreSQL connection string      |
+| `MONGODB_URI`     | ✅        | —         | MongoDB connection string         |
+| `MONGODB_DB`      | ❌        | `odsperf` | MongoDB database name             |
+| `PORT`            | ❌        | `8080`    | HTTP listen port                  |
+| `RUST_LOG`        | ❌        | `info`    | Log level: debug/info/warn/error  |
+| `RUST_LOG_FORMAT` | ❌        | `pretty`  | `json` สำหรับ Kubernetes          |
+
+---
+
+## Step 4: ทดสอบ API
+
+ดู API specification เต็มที่ [docs/api-reference.md](docs/api-reference.md)
+
+### ใช้ test-api.sh (แนะนำ)
+
+```bash
+# ทดสอบทั้ง 2 endpoints พร้อมกัน
+./scripts/test-api.sh
+
+# ยิงตรงที่ Pod (bypass Istio) เมื่อ Gateway ยังไม่พร้อม
+kubectl port-forward svc/ods-service 8080:80 -n ods-service &
+./scripts/test-api.sh --host localhost:8080
+
+# Benchmark 10 รอบ เปรียบเทียบ latency
+./scripts/test-api.sh --repeat 10
+
+# เทสเฉพาะ PostgreSQL หรือ MongoDB
+./scripts/test-api.sh --pg
+./scripts/test-api.sh --mongo
+
+# ดู response เต็ม
+./scripts/test-api.sh --verbose
+```
+
+### curl โดยตรง
+
+```bash
+# Health check
+curl http://ods.local/health
+
+# Query PostgreSQL
+curl -s -X POST http://ods.local/v1/query-pg \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "12345678901",
+    "start_month": 1, "start_year":  2025,
+    "end_month":   12, "end_year":  2025
+  }' | jq '{db, total, elapsed_ms}'
+
+# Query MongoDB
+curl -s -X POST http://ods.local/v1/query-mongo \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "12345678901",
+    "start_month": 1, "start_year":  2025,
+    "end_month":   12, "end_year":  2025
+  }' | jq '{db, total, elapsed_ms}'
+
+# เปรียบเทียบ elapsed_ms สั้น ๆ
+for db in pg mongo; do
+  echo "=== $db ===";
+  curl -s -X POST http://ods.local/v1/query-${db} \
+    -H "Content-Type: application/json" \
+    -d '{"account_no":"12345678901","start_month":1,"start_year":2025,"end_month":12,"end_year":2025}' \
+    | jq '{db, total, elapsed_ms}';
+done
+```
+
+---
+
+## การตรวจสอบสถานะ
+
+```bash
+# ดู status ทั้งหมด
+make status
+
+# ดู Pod ทุก namespace
+kubectl get pods -A | grep -E "NAMESPACE|ods-service|monitoring|database|ingress"
+```
+
+ผลลัพธ์ที่ควรได้:
+```
+NAMESPACE        NAME                                 READY   STATUS
+ingress          istio-ingressgateway-xxx             1/1     Running
+monitoring       kube-prometheus-stack-grafana-xxx    1/1     Running
+monitoring       prometheus-kube-prometheus-xxx       2/2     Running
+database-pg      postgresql-0                         2/2     Running
+database-mongo   mongodb-xxx                          2/2     Running
+ods-service      ods-service-xxx                      2/2     Running
+```
+
+> ℹ️ Pods ที่มี `2/2` คือ app container + Istio sidecar (หรือ metrics exporter)
+
+---
+
+## การเข้าถึง UI ต่าง ๆ
+
+### วิธีที่ 1: Port Forward (ง่ายที่สุด)
+
+```bash
+make port-forward-grafana      # http://localhost:3000  (admin / admin)
+make port-forward-prometheus   # http://localhost:9090
+```
+
+### วิธีที่ 2: ผ่าน Gateway
+
+เพิ่ม `/etc/hosts`:
+```
+127.0.0.1  grafana.local
+127.0.0.1  prometheus.local
+127.0.0.1  ods.local
+```
+
+| URL                     | บริการ     | Login         |
+|------------------------|-----------|---------------|
+| http://grafana.local    | Grafana   | admin / admin |
+| http://prometheus.local | Prometheus | —            |
+| http://ods.local/health | ODS API   | —             |
+
+### Grafana Dashboards
+
+หลัง login → **Dashboards → ODS Performance**:
+
+| Dashboard          | รายละเอียด                               |
+|-------------------|------------------------------------------|
+| PostgreSQL         | Query stats, connections, cache hit rate |
+| MongoDB            | Operations/sec, document reads, latency  |
+| Kubernetes Cluster | CPU, Memory, Pod status                  |
 
 ---
 
@@ -449,68 +381,118 @@ make clean-mongo
                          Internet / Local
                                │
                     ┌──────────▼──────────┐
-                    │   Istio Gateway      │  namespace: ingress
-                    │  (Gateway API v1)    │
-                    └──────┬──────┬────────┘
-                           │      │
-              HTTPRoute     │      │  HTTPRoute
-           grafana.local    │      │  prometheus.local
-                           │      │
-              ┌────────────▼┐    ┌▼────────────────┐
-              │   Grafana   │    │   Prometheus     │
-              └─────────────┘    └──────────────────┘
-               namespace: monitoring
-                    │ scrape metrics
-         ┌──────────┴──────────┐
-         │                     │
-┌────────▼────────┐   ┌────────▼────────┐
-│   PostgreSQL    │   │    MongoDB      │
-│ + pg_exporter   │   │ + mongo_exporter│
-└─────────────────┘   └─────────────────┘
-    namespace: databases
+                    │    Istio Gateway     │  namespace: ingress
+                    │   (Gateway API v1)   │
+                    └───┬─────┬─────┬─────┘
+                        │     │     │
+              ods.local  │     │     │  grafana.local / prometheus.local
+                        │     │     │
+               ┌────────▼┐    │    ┌▼────────────────┐
+               │   ODS   │    │    │  Grafana         │  namespace: monitoring
+               │ Service │    │    │  Prometheus      │
+               │ (Rust)  │    │    └──────────────────┘
+               └──┬───┬──┘    │           │ scrape metrics
+         POST /v1 │   │       │    ┌──────┴──────┐
+         query-pg │   │       │    │             │
+                  │   │ query  │   │             │
+                  │   │ -mongo │  ┌▼──────────┐ ┌▼──────────────┐
+      ┌───────────▼┐  └───────▼┐ │ pg_export │ │ mongo_exporter │
+      │ PostgreSQL │  │ MongoDB │ └───────────┘ └───────────────┘
+      │ database-pg│  │ database│
+      │ -mongo     │  └─────────┘
+      └────────────┘
 ```
+
+---
+
+## การลบ Infrastructure ทั้งหมด
+
+```bash
+make clean        # ลบทุกอย่าง (Helm releases + Namespaces + PVC)
+make clean-pg     # ลบเฉพาะ PostgreSQL
+make clean-mongo  # ลบเฉพาะ MongoDB
+```
+
+> ⚠️ `make clean` จะลบ PersistentVolumeClaim ด้วย — ข้อมูลจะหายทั้งหมด
 
 ---
 
 ## Troubleshooting
 
+### ErrImageNeverPull — Docker Desktop
+
+**สาเหตุ:** Docker Desktop ≥ 4.12 แยก image store ระหว่าง Docker daemon กับ Kubernetes containerd
+**แก้ไข:**
+1. Docker Desktop → Settings → General → เปิด **"Use containerd for pulling and storing images"** → Apply & Restart
+2. Build image ใหม่: `docker build -t odsperf-demo:latest .`
+3. `kubectl rollout restart deployment/ods-service -n ods-service`
+
+หรือเปลี่ยน `imagePullPolicy` ใน `deployment.yaml` เป็น `IfNotPresent` ชั่วคราว
+
+---
+
+### Could not resolve host: ods.local
+
+```bash
+# ดู Gateway IP
+kubectl get svc -n istio-system
+
+# เพิ่ม /etc/hosts (Docker Desktop ใช้ 127.0.0.1)
+echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
+```
+
+---
+
 ### Gateway IP ไม่ได้รับ (Pending)
 
-**Docker Desktop**: ตรวจสอบว่า Kubernetes เปิดอยู่และ LoadBalancer ทำงานได้
+**Docker Desktop**: ตรวจสอบว่า Kubernetes เปิดอยู่
+**minikube**: รัน `minikube tunnel` ใน terminal แยก
 
-**minikube**: รัน `minikube tunnel` ใน terminal แยก:
-```bash
-minikube tunnel
-```
+---
 
 ### Pod ค้างอยู่ที่ Pending
 
-ตรวจสอบ resource:
 ```bash
 kubectl describe pod <pod-name> -n <namespace>
-# ดูที่ Events section
+# ดูที่ Events section — มักเกิดจาก resource ไม่เพียงพอ
 ```
 
-อาจเกิดจาก resource ไม่เพียงพอ ลองเพิ่ม Memory/CPU ให้ minikube:
+---
+
+### Rust Build ล้มเหลว — MSRV Error
+
+```
+error: rustc X.Y.Z is not supported by the following packages:
+  darling@0.23.0 requires rustc 1.88.0
+```
+
+Dockerfile ต้องใช้ `rust:1.88-slim` หรือใหม่กว่า:
 ```bash
-minikube stop
-minikube start --cpus=6 --memory=12288
+# ตรวจสอบ Dockerfile
+head -10 Dockerfile
+# ควรเห็น: FROM rust:1.88-slim AS builder
 ```
 
-### Prometheus ไม่เห็น metrics จาก PostgreSQL หรือ MongoDB
+---
 
-ตรวจสอบ ServiceMonitor:
+### Prometheus ไม่เห็น Metrics
+
 ```bash
 kubectl get servicemonitor -n monitoring
-kubectl get servicemonitor -n databases
+kubectl get servicemonitor -n database-pg
+kubectl get servicemonitor -n database-mongo
+# เช็ค target: http://localhost:9090/targets
 ```
 
-ตรวจสอบ Prometheus targets:
-```
-http://localhost:9090/targets
-```
+---
 
-### Grafana Dashboard ไม่แสดงข้อมูล
+### ODS Service ต่อ DB ไม่ได้
 
-รอประมาณ 2-3 นาทีหลังจากติดตั้ง เพื่อให้ Prometheus เก็บ metrics ได้ก่อน
-แล้วลอง refresh dashboard
+```bash
+# ดู logs
+kubectl logs -n ods-service -l app=ods-service --tail=50
+
+# ทดสอบ connectivity จากภายใน cluster
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -n ods-service -- \
+  curl -s postgresql.database-pg.svc.cluster.local:5432 || true
+```
