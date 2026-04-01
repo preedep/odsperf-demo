@@ -27,3 +27,6 @@ target
 /.idea
 
 
+
+# Generated mock data (large CSV files — do not commit)
+/data/*.csv

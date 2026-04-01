@@ -1,0 +1,91 @@
+# =============================================================================
+# ODS Service — Deployment + Service
+# Namespace: ods-service
+# =============================================================================
+# Build image first:
+#   docker build -t odsperf-demo:latest .
+#
+# For Docker Desktop (local image, no registry push needed):
+#   imagePullPolicy: Never
+#
+# For minikube:
+#   eval $(minikube docker-env)   # point docker CLI to minikube's daemon
+#   docker build -t odsperf-demo:latest .
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ods-service
+  namespace: ods-service
+  labels:
+    app:     ods-service
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ods-service
+  template:
+    metadata:
+      labels:
+        app:     ods-service
+        version: v1
+    spec:
+      containers:
+        - name:  ods-service
+          image: odsperf-demo:latest
+          # IfNotPresent = use local image if exists, pull only if not found
+          # (Docker Desktop 4.x+ uses containerd — Never can fail even if image exists in docker daemon)
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name:          http
+              protocol:      TCP
+
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://odsuser:odspassword@postgresql.database-pg.svc.cluster.local:5432/odsperf"
+            - name: MONGODB_URI
+              value: "mongodb://odsuser:odspassword@mongodb.database-mongo.svc.cluster.local:27017/odsperf"
+            - name: MONGODB_DB
+              value: "odsperf"
+            - name: PORT
+              value: "8080"
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_LOG_FORMAT
+              value: "json"
+
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"
+              memory: "256Mi"
+
+          # ── Probes ──────────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds:       10
+            failureThreshold:    3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds:       5
+            failureThreshold:    3
+
+          # ── Graceful shutdown ────────────────────────────────────────────
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 3"]
+
+      terminationGracePeriodSeconds: 30
