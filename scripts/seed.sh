@@ -104,19 +104,13 @@ if [ "$DO_CSV" = true ]; then
   if [ -f "$CSV_PATH" ]; then
     ROW_COUNT=$(tail -n +2 "$CSV_PATH" | wc -l | xargs)
     log_info "Existing CSV found: ${CSV_PATH} (${ROW_COUNT} rows)"
-    read -p "Regenerate? (y/N): " -n 1 -r; echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      log_ok "Keeping existing CSV"
-    else
-      BIN=$(build_bin generate_csv)
-      OUTPUT_PATH="$CSV_PATH" "$BIN"
-    fi
+    log_ok "Using existing CSV file"
   else
+    log_info "CSV file not found, generating new one..."
     BIN=$(build_bin generate_csv)
     OUTPUT_PATH="$CSV_PATH" "$BIN"
+    [ -f "$CSV_PATH" ] && log_ok "CSV generated: ${CSV_PATH}" || log_fail "CSV generation failed"
   fi
-
-  [ -f "$CSV_PATH" ] && log_ok "CSV ready: ${CSV_PATH}" || log_fail "CSV generation failed"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

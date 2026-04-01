@@ -229,7 +229,20 @@ kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb    27017:27017 -n database-mongo &
 ```
 
-### 3.2 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
+### 3.2 สร้าง PostgreSQL Schema (ครั้งแรกเท่านั้น)
+
+**สำคัญ:** ต้องรัน script นี้ก่อนครั้งแรก เพื่อสร้าง schema และ table
+
+```bash
+./scripts/init-pg-schema.sh
+```
+
+Script จะ:
+- สร้าง schema `odsperf`
+- สร้าง table `account_transaction` พร้อม primary key และ indexes
+- Verify ว่า table ถูกสร้างสำเร็จ
+
+### 3.3 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
 
 ```bash
 ./scripts/seed.sh
@@ -240,9 +253,12 @@ Script จะรัน 3 ขั้นตอนตามลำดับ:
 2. **Load PostgreSQL** → อ่าน CSV และ insert batch ทีละ 5,000 rows
 3. **Load MongoDB** → อ่าน CSV ชุดเดียวกัน และ insert_many batch ทีละ 5,000 docs
 
-### 3.3 รันแยกทีละขั้นตอน
+### 3.4 รันแยกทีละขั้นตอน
 
 ```bash
+# ขั้นตอน 0: สร้าง PostgreSQL schema (ครั้งแรกเท่านั้น)
+./scripts/init-pg-schema.sh
+
 # ขั้นตอน 1: สร้าง CSV
 cargo build --release --bin generate_csv
 ./target/release/generate_csv
@@ -259,7 +275,7 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
   ./target/release/load_mongo
 ```
 
-### Options ของ seed.sh
+### 3.5 Options ของ seed.sh
 
 ```bash
 ./scripts/seed.sh                 # full pipeline (CSV + PG + Mongo)
