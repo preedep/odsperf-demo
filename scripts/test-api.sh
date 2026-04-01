@@ -15,7 +15,7 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 BASE_URL="http://ods.local"
-ACCOUNT_NO="12345678901"
+ACCOUNT_NO="89036188857"  # Real account from CSV (has 2 transactions)
 START_MONTH=1
 START_YEAR=2025
 END_MONTH=12
