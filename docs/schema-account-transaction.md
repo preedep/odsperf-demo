@@ -1,10 +1,13 @@
 # Schema: account_transaction
 
-ตาราง ODS สำหรับ benchmark — แปลงจาก DB2 เป็น PostgreSQL
+ตาราง ODS สำหรับ benchmark — แปลงจาก DB2 พร้อม schema validation ทั้ง PostgreSQL และ MongoDB
 
-- **Schema:** `odsperf`
-- **Table:** `account_transaction`
-- **SQL:** [`infra/postgresql/init-schema.sql`](../infra/postgresql/init-schema.sql)
+| | PostgreSQL | MongoDB |
+|---|---|---|
+| Database | `odsperf` | `odsperf` |
+| Table / Collection | `account_transaction` | `account_transaction` |
+| Schema enforcement | DDL (strict) | `$jsonSchema` validator (strict) |
+| Script | [`infra/postgresql/init-schema.sql`](../infra/postgresql/init-schema.sql) | [`infra/mongodb/init-schema.js`](../infra/mongodb/init-schema.js) |
 
 ---
 
@@ -82,4 +85,71 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 # ตรวจสอบ
 psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
   -c "\d odsperf.account_transaction"
+```
+
+---
+
+## MongoDB Schema Validation
+
+MongoDB enforce schema ผ่าน `$jsonSchema` validator ที่ collection level — ทำงานคล้าย PostgreSQL DDL แต่ยืดหยุ่นกว่า
+
+### Validation Settings
+
+| Option | Value | ความหมาย |
+|--------|-------|----------|
+| `validationLevel` | `strict` | validate ทุก insert และ update |
+| `validationAction` | `error` | reject document ที่ไม่ผ่าน (เหมือน PostgreSQL) |
+| `additionalProperties` | `false` | ไม่อนุญาต field นอก schema |
+
+### Type Mapping: PostgreSQL → MongoDB BSON
+
+| PostgreSQL Type | MongoDB BSON Type | หมายเหตุ |
+|----------------|------------------|----------|
+| `CHAR(n)` | `string` (maxLength: n) | MongoDB ไม่มี fixed-length string |
+| `DATE` | `date` | BSON Date เก็บเป็น UTC milliseconds |
+| `INTEGER` | `int` | 32-bit integer |
+| `NUMERIC(13,2)` | `decimal` (Decimal128) | ใช้ Decimal128 เพื่อ exact precision — ห้ามใช้ `double` สำหรับเงิน |
+| `CHAR(1)` camt | `string` + `enum: ["C","D"]` | เพิ่ม enum constraint ที่ MongoDB ทำได้แต่ PostgreSQL ต้องใช้ CHECK |
+
+### รัน Script
+
+```bash
+# Port-forward MongoDB แล้วรัน init script
+make port-forward-mongodb &
+sleep 2
+
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
+  infra/mongodb/init-schema.js
+
+# ตรวจสอบ schema validation
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
+  --eval 'db.getCollectionInfos({name: "account_transaction"})[0].options'
+
+# ตรวจสอบ indexes
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
+  --eval 'db.account_transaction.getIndexes()'
+```
+
+### ทดสอบ Validation
+
+```javascript
+// ✅ Valid document — ผ่าน
+db.account_transaction.insertOne({
+  iacct: "12345678901",
+  drun: new Date("2026-01-15"),
+  cseq: NumberInt(1),
+  ddate: new Date("2026-01-15"),
+  camt: "C",
+  aamount: NumberDecimal("1500.00"),
+  abal: NumberDecimal("50000.00")
+});
+
+// ❌ Invalid — camt ต้องเป็น "C" หรือ "D" เท่านั้น
+db.account_transaction.insertOne({
+  iacct: "12345678901",
+  drun: new Date("2026-01-15"),
+  cseq: NumberInt(2),
+  ddate: new Date("2026-01-15"),
+  camt: "X"   // → MongoServerError: Document failed validation
+});
 ```

@@ -12,7 +12,8 @@
 - [Step 1: ติดตั้ง Infrastructure](#step-1-ติดตั้ง-infrastructure)
 - [การตรวจสอบสถานะ](#การตรวจสอบสถานะ)
 - [การเข้าถึง UI ต่าง ๆ](#การเข้าถึง-ui-ต่าง-ๆ)
-- [Step 2: Database Schema](#step-2-database-schema)
+- [Step 2: ODS Service (Rust + Axum)](#step-2-ods-service-rust--axum)
+- [Step 3: Database Schema](#step-3-database-schema)
 - [การลบ Infrastructure ทั้งหมด](#การลบ-infrastructure-ทั้งหมด)
 
 ---
@@ -319,7 +320,76 @@ make port-forward-mongodb
 
 ---
 
-## Step 2: Database Schema
+## Step 2: ODS Service (Rust + Axum)
+
+### โครงสร้าง Source Code
+
+```
+src/
+├── main.rs              # Entry point — init logging, DB, server
+├── config.rs            # Config จาก environment variables
+├── error.rs             # AppError → HTTP response (thiserror)
+├── state.rs             # AppState — shared PgPool + MongoDB Database
+├── models.rs            # Request / Response / PgTransaction / MongoTransaction DTOs
+├── db/
+│   ├── postgres.rs      # PgPoolOptions::connect()
+│   └── mongodb.rs       # Client::with_uri_str() + ping
+└── handlers/
+    ├── mod.rs           # Router + middleware stack
+    ├── health.rs        # GET  /health
+    ├── pg.rs            # POST /v1/query-pg
+    └── mongo.rs         # POST /v1/query-mongo
+```
+
+### Build และ Deploy
+
+```bash
+# 1. Build Docker image (ทำจาก project root)
+docker build -t odsperf-demo:latest .
+
+# 2. Deploy ลง Kubernetes
+kubectl apply -f infra/ods-service/deployment.yaml
+kubectl apply -f infra/ods-service/service.yaml
+
+# 3. Apply HTTPRoute (ถ้ายังไม่ได้ apply)
+kubectl apply -f infra/istio/httproute.yaml
+
+# 4. ตรวจสอบ
+kubectl get pods -n ods-service
+kubectl logs -n ods-service -l app=ods-service -f
+```
+
+### Test API
+
+```bash
+# ผ่าน port-forward
+kubectl port-forward -n ods-service svc/ods-service 8080:80
+
+curl -s -X POST http://localhost:8080/v1/query-pg \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "12345678901",
+    "start_month": 1, "start_year": 2025,
+    "end_month":   12, "end_year": 2025
+  }' | jq '{db,total,elapsed_ms}'
+```
+
+ดู API Reference เต็มที่ [docs/api-reference.md](docs/api-reference.md)
+
+### Environment Variables
+
+| Variable         | Required | Default  | Description                        |
+|-----------------|----------|----------|------------------------------------|
+| `DATABASE_URL`  | ✅        | —        | PostgreSQL connection string       |
+| `MONGODB_URI`   | ✅        | —        | MongoDB connection string          |
+| `MONGODB_DB`    | ❌        | odsperf  | MongoDB database name              |
+| `PORT`          | ❌        | 8080     | HTTP listen port                   |
+| `RUST_LOG`      | ❌        | info     | Log level (debug/info/warn/error)  |
+| `RUST_LOG_FORMAT` | ❌     | pretty   | `json` สำหรับ Kubernetes          |
+
+---
+
+## Step 3: Database Schema
 
 ### PostgreSQL
 
