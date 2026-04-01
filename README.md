@@ -12,7 +12,7 @@
 - [Step 1: ติดตั้ง Infrastructure](#step-1-ติดตั้ง-infrastructure)
 - [การตรวจสอบสถานะ](#การตรวจสอบสถานะ)
 - [การเข้าถึง UI ต่าง ๆ](#การเข้าถึง-ui-ต่าง-ๆ)
-- [Step 2: (Coming Soon)](#step-2-coming-soon)
+- [Step 2: Database Schema](#step-2-database-schema)
 - [การลบ Infrastructure ทั้งหมด](#การลบ-infrastructure-ทั้งหมด)
 
 ---
@@ -21,8 +21,10 @@
 
 ```
 odsperf-demo/
+├── docs/
+│   └── schema-account-transaction.md  # DB2→PostgreSQL schema reference
 ├── infra/                          # Infrastructure as Code
-│   ├── namespaces.yaml             # Kubernetes Namespaces
+│   ├── namespaces.yaml             # Kubernetes Namespaces + ResourceQuotas
 │   ├── istio/
 │   │   ├── gateway.yaml            # Istio Gateway (Gateway API)
 │   │   ├── httproute.yaml          # HTTP Routes (Grafana, Prometheus, ODS)
@@ -30,12 +32,13 @@ odsperf-demo/
 │   ├── monitoring/
 │   │   └── kube-prometheus-values.yaml  # Prometheus + Grafana config
 │   ├── postgresql/
-│   │   └── values.yaml             # PostgreSQL Helm values
+│   │   ├── values.yaml             # PostgreSQL Helm values
+│   │   └── init-schema.sql         # DDL — account_transaction table
 │   ├── mongodb/
 │   │   └── values.yaml             # MongoDB Helm values
 │   └── Makefile                    # Orchestrate deployment
 ├── src/
-│   └── main.rs                     # Rust application (Step 2)
+│   └── main.rs                     # Rust application (Step 3)
 ├── Cargo.toml
 └── README.md
 ```
@@ -316,7 +319,33 @@ make port-forward-mongodb
 
 ---
 
-## Step 2: (Coming Soon)
+## Step 2: Database Schema
+
+### PostgreSQL
+
+ตาราง ODS แปลงจาก DB2 — ดูรายละเอียดเต็มได้ที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
+
+| Table | Schema | Primary Key | SQL |
+|-------|--------|-------------|-----|
+| `account_transaction` | `odsperf` | `iacct, drun, cseq` | [init-schema.sql](infra/postgresql/init-schema.sql) |
+
+**รัน DDL:**
+
+```bash
+make port-forward-postgresql &
+sleep 2
+psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
+  -f infra/postgresql/init-schema.sql
+```
+
+### MongoDB
+
+Schema สำหรับ MongoDB จะถูกสร้างใน Step 3 (Rust service) — MongoDB เป็น schemaless
+แต่ใช้ collection ชื่อ `account_transaction` ใน database `odsperf` เช่นกัน เพื่อให้ benchmark เปรียบเทียบได้ตรงกัน
+
+---
+
+## Step 3: (Coming Soon) — Rust ODS Service
 
 Rust application สำหรับ benchmark และเปรียบเทียบ performance ระหว่าง PostgreSQL และ MongoDB:
 - CRUD operations benchmark
