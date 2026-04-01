@@ -22,7 +22,7 @@ CREATE TABLE odsperf.account_transaction (
     -- -----------------------------------------------------------------------
     -- Key columns (NOT NULL)
     -- -----------------------------------------------------------------------
-    iacct           CHAR(11)        NOT NULL,   -- เลขที่บัญชี
+    iacct           VARCHAR(11)     NOT NULL,   -- เลขที่บัญชี
     drun            DATE            NOT NULL,   -- วันที่ RUN ข้อมูล
     cseq            INTEGER         NOT NULL,   -- ลำดับ
     ddate           DATE            NOT NULL,   -- วันที่รายการนั้นมีผล
@@ -31,17 +31,17 @@ CREATE TABLE odsperf.account_transaction (
     -- Transaction columns (Nullable)
     -- -----------------------------------------------------------------------
     dtrans          DATE,                       -- วันที่ทำรายการ
-    ttime           CHAR(5),                    -- เวลาที่ทำรายการ (HH:MM)
-    cmnemo          CHAR(3),                    -- รหัสการทำรายการ
-    cchannel        CHAR(4),                    -- ช่องทางที่ทำรายการ
-    ctr             CHAR(2),                    -- เลขที่โอน
-    cbr             CHAR(4),                    -- สาขาที่ทำรายการ
-    cterm           CHAR(5),                    -- TERMINAL ID
-    camt            CHAR(1),                    -- CREDIT/DEBIT  ('C' | 'D')
+    ttime           VARCHAR(5),                 -- เวลาที่ทำรายการ (HH:MM)
+    cmnemo          VARCHAR(3),                 -- รหัสการทำรายการ
+    cchannel        VARCHAR(4),                 -- ช่องทางที่ทำรายการ
+    ctr             VARCHAR(2),                 -- เลขที่โอน
+    cbr             VARCHAR(4),                 -- สาขาที่ทำรายการ
+    cterm           VARCHAR(5),                 -- TERMINAL ID
+    camt            VARCHAR(1),                 -- CREDIT/DEBIT  ('C' | 'D')
     aamount         NUMERIC(13, 2),             -- จำนวนเงินที่ทำรายการ
     abal            NUMERIC(13, 2),             -- ยอดเงินคงเหลือ
     description     VARCHAR(20),                -- รายละเอียดของรายการ
-    time_hms        CHAR(8),                    -- เวลา HH:MM:SS
+    time_hms        VARCHAR(8),                 -- เวลา HH:MM:SS
 
     -- -----------------------------------------------------------------------
     -- Primary Key — iacct + drun + cseq (uniquely identifies a transaction)
