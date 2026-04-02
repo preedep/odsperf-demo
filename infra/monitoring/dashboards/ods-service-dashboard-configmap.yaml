@@ -1,16 +1,13 @@
 # =============================================================================
 # Grafana Dashboard ConfigMap for ODS Service
-# This ConfigMap will be automatically discovered by Grafana sidecar
+# Mounted by Helm dashboardsConfigMaps.default → provider folder: ODS Performance
+# Do NOT add grafana_dashboard: "1" label — sidecar would load it to General (wrong folder)
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ods-service-dashboard
   namespace: monitoring
-  labels:
-    grafana_dashboard: "1"
-  annotations:
-    grafana_folder: "ODS Performance"
 data:
   ods-service-dashboard.json: |
     {
