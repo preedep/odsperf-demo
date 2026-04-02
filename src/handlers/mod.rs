@@ -24,11 +24,17 @@ pub fn router(state: Arc<AppState>, metrics_handle: PrometheusHandle) -> Router 
     let request_id_header =
         axum::http::HeaderName::from_static("x-request-id");
 
+    // Wrap metrics_handle in Arc for sharing across requests
+    let metrics_handle = Arc::new(metrics_handle);
+
     Router::new()
         // Health
         .route("/health", get(health::handle))
         // Metrics endpoint for Prometheus
-        .route("/metrics", get(move || async move { metrics_handle.render() }))
+        .route("/metrics", get({
+            let handle = Arc::clone(&metrics_handle);
+            move || async move { handle.render() }
+        }))
         // ODS query APIs
         .route("/v1/query-pg",    post(pg::handle))
         .route("/v1/query-mongo", post(mongo::handle))
@@ -96,19 +102,9 @@ async fn metrics_middleware(req: Request, next: Next) -> impl IntoResponse {
 
     let status = response.status().as_u16().to_string();
 
-    // metrics 0.22 builder API — uses the same global registry as PrometheusRecorder
-    // Old metrics 0.21 API (increment_counter! / histogram!(name, value, ...)) wrote
-    // to a separate registry instance and never reached the Prometheus exporter.
-    metrics::counter!("http_requests_total",
-        "method" => method.clone(),
-        "path"   => path.clone(),
-        "status" => status
-    ).increment(1);
-
-    metrics::histogram!("http_request_duration_seconds",
-        "method" => method,
-        "path"   => path
-    ).record(latency.as_secs_f64());
+    // Record metrics with labels
+    metrics::counter!("http_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status).increment(1);
+    metrics::histogram!("http_request_duration_seconds", "method" => method, "path" => path).record(latency.as_secs_f64());
 
     response
 }
