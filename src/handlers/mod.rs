@@ -6,6 +6,9 @@ use crate::state::AppState;
 use axum::{
     Router,
     routing::{get, post},
+    response::IntoResponse,
+    extract::Request,
+    middleware::{self, Next},
 };
 use std::sync::Arc;
 use tower_http::{
@@ -15,20 +18,25 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::Span;
+use metrics_exporter_prometheus::PrometheusHandle;
 
-pub fn router(state: Arc<AppState>) -> Router {
+pub fn router(state: Arc<AppState>, metrics_handle: PrometheusHandle) -> Router {
     let request_id_header =
         axum::http::HeaderName::from_static("x-request-id");
 
     Router::new()
         // Health
         .route("/health", get(health::handle))
+        // Metrics endpoint for Prometheus
+        .route("/metrics", get(move || async move { metrics_handle.render() }))
         // ODS query APIs
         .route("/v1/query-pg",    post(pg::handle))
         .route("/v1/query-mongo", post(mongo::handle))
         // Shared state
         .with_state(state)
         // ── Middleware stack (applied bottom-up) ───────────────────────────
+        // 0. Metrics tracking
+        .layer(middleware::from_fn(metrics_middleware))
         // 1. Request ID — generate and propagate x-request-id
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(
@@ -44,10 +52,11 @@ pub fn router(state: Arc<AppState>) -> Router {
                         .get("x-request-id")
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("-");
+                    let path = req.uri().path().to_string();
                     tracing::info_span!(
                         "http",
                         method  = %req.method(),
-                        path    = %req.uri().path(),
+                        path    = %path,
                         request_id = %request_id,
                     )
                 })
@@ -55,9 +64,12 @@ pub fn router(state: Arc<AppState>) -> Router {
                     |resp: &axum::http::Response<_>,
                      latency: std::time::Duration,
                      _span: &Span| {
+                        let status = resp.status().as_u16();
+                        let latency_ms = latency.as_millis();
+                        
                         tracing::info!(
-                            status     = resp.status().as_u16(),
-                            latency_ms = latency.as_millis(),
+                            status     = status,
+                            latency_ms = latency_ms,
                             "response"
                         );
                     },
@@ -67,4 +79,21 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
         // 4. CORS — allow all origins (tighten for production)
         .layer(CorsLayer::permissive())
+}
+
+async fn metrics_middleware(req: Request, next: Next) -> impl IntoResponse {
+    let path = req.uri().path().to_string();
+    let method = req.method().to_string();
+    
+    let start = std::time::Instant::now();
+    let response = next.run(req).await;
+    let latency = start.elapsed();
+    
+    let status = response.status().as_u16();
+    
+    // Record metrics with labels
+    metrics::increment_counter!("http_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status.to_string());
+    metrics::histogram!("http_request_duration_seconds", latency.as_secs_f64(), "method" => method, "path" => path);
+    
+    response
 }

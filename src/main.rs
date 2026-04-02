@@ -30,8 +30,11 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(state::AppState { pg, mongo });
 
+    // ── Initialize Prometheus metrics exporter ───────────────────────────
+    let metrics_handle = init_metrics();
+
     // ── Build router ─────────────────────────────────────────────────────
-    let app = handlers::router(state);
+    let app = handlers::router(state, metrics_handle);
 
     // ── Serve ────────────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
@@ -92,4 +95,12 @@ fn init_tracing(format: &LogFormat) {
                 .init();
         }
     }
+}
+
+fn init_metrics() -> metrics_exporter_prometheus::PrometheusHandle {
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    PrometheusBuilder::new()
+        .install_recorder()
+        .expect("failed to install Prometheus recorder")
 }

@@ -73,7 +73,8 @@ odsperf-demo/
 │   └── mock_transactions.csv           # 1M rows — shared source for PG + Mongo
 ├── docs/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
-│   └── api-reference.md                # REST API specification
+│   ├── api-reference.md                # REST API specification
+│   └── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
 ├── scripts/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
@@ -88,7 +89,10 @@ odsperf-demo/
 │   │   ├── httproute.yaml              # HTTP Routes: Grafana, Prometheus, ODS
 │   │   └── reference-grants.yaml       # Cross-namespace ReferenceGrants
 │   ├── monitoring/
-│   │   └── kube-prometheus-values.yaml # Prometheus + Grafana Helm values
+│   │   ├── kube-prometheus-values.yaml # Prometheus + Grafana Helm values
+│   │   └── dashboards/
+│   │       ├── ods-service-dashboard.json         # Grafana dashboard JSON
+│   │       └── ods-service-dashboard-configmap.yaml # Dashboard ConfigMap
 │   ├── postgresql/
 │   │   ├── values.yaml                 # PostgreSQL Helm values
 │   │   └── init-schema.sql             # DDL — odsperf.account_transaction
@@ -97,10 +101,11 @@ odsperf-demo/
 │   │   └── init-schema.js              # Collection + $jsonSchema validator
 │   ├── ods-service/
 │   │   ├── deployment.yaml             # Deployment: odsperf-demo image
-│   │   └── service.yaml                # ClusterIP Service port 80→8080
+│   │   ├── service.yaml                # ClusterIP Service port 80→8080
+│   │   └── servicemonitor.yaml         # Prometheus ServiceMonitor
 │   └── Makefile                        # Orchestrate deployment commands
 ├── src/
-│   ├── main.rs                         # Entry point: init logging, DB, server
+│   ├── main.rs                         # Entry point: init logging, DB, metrics, server
 │   ├── config.rs                       # Config จาก environment variables
 │   ├── error.rs                        # AppError → HTTP response (thiserror)
 │   ├── state.rs                        # AppState: PgPool + MongoDB Database
@@ -109,7 +114,7 @@ odsperf-demo/
 │   │   ├── postgres.rs                 # PgPoolOptions::connect()
 │   │   └── mongodb.rs                  # Client::with_uri_str() + ping
 │   ├── handlers/
-│   │   ├── mod.rs                      # Router + middleware stack
+│   │   ├── mod.rs                      # Router + middleware (metrics, tracing)
 │   │   ├── health.rs                   # GET  /health
 │   │   ├── pg.rs                       # POST /v1/query-pg
 │   │   └── mongo.rs                    # POST /v1/query-mongo
@@ -484,6 +489,30 @@ kubectl get svc -n ingress
 echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
 ```
 
+### 4.5 Deploy Monitoring Dashboard (Optional)
+
+ODS Service มี Prometheus metrics endpoint (`/metrics`) สำหรับติดตาม TPS และ latency
+
+```bash
+# 1. Deploy ServiceMonitor (ให้ Prometheus scrape metrics)
+kubectl apply -f infra/ods-service/servicemonitor.yaml
+
+# 2. Deploy Grafana Dashboard
+kubectl apply -f infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml
+
+# 3. Verify metrics endpoint
+kubectl port-forward -n ods-service svc/ods-service 8080:80 &
+curl http://localhost:8080/metrics
+```
+
+**Metrics ที่ expose:**
+- `http_requests_total{method, path, status}` — Request counter
+- `http_request_duration_seconds{method, path}` — Latency histogram (p50, p95, p99)
+
+**เข้าถึง Dashboard:**
+- Grafana → Dashboards → ODS folder → **"ODS Service Performance"**
+- ดูรายละเอียดเพิ่มเติม: [docs/grafana-dashboard.md](docs/grafana-dashboard.md)
+
 ### Environment Variables
 
 | Variable           | Required | Default   | Description                       |
@@ -648,6 +677,7 @@ make port-forward-prometheus   # http://localhost:9090
 
 | Dashboard          | รายละเอียด                               |
 |-------------------|------------------------------------------|
+| ODS Service Performance | TPS, Latency (p50/p95/p99), HTTP status codes — [ดูวิธีติดตั้ง](docs/grafana-dashboard.md) |
 | PostgreSQL         | Query stats, connections, cache hit rate |
 | MongoDB            | Operations/sec, document reads, latency  |
 | Kubernetes Cluster | CPU, Memory, Pod status                  |
@@ -780,11 +810,35 @@ head -10 Dockerfile
 ### Prometheus ไม่เห็น Metrics
 
 ```bash
+# ตรวจสอบ ServiceMonitor ทั้งหมด
 kubectl get servicemonitor -n monitoring
 kubectl get servicemonitor -n database-pg
 kubectl get servicemonitor -n database-mongo
-# เช็ค target: http://localhost:9090/targets
+kubectl get servicemonitor -n ods-service
+
+# เช็ค Prometheus targets
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+# เปิด http://localhost:9090/targets
+# ควรเห็น: ods-service/ods-service/0 (1/1 up)
 ```
+
+**ตรวจสอบ ODS Service metrics endpoint:**
+```bash
+# Port-forward ODS Service
+kubectl port-forward -n ods-service svc/ods-service 8080:80
+
+# ทดสอบ metrics endpoint
+curl http://localhost:8080/metrics
+
+# ควรเห็น metrics เช่น:
+# http_requests_total{method="GET",path="/health",status="200"} 5
+# http_request_duration_seconds_bucket{method="POST",path="/v1/query-pg",le="0.005"} 10
+```
+
+**ถ้า metrics ไม่มี:**
+- ตรวจสอบว่า ODS Service ถูก rebuild ด้วย metrics support
+- ดู logs: `kubectl logs -n ods-service -l app=ods-service`
+- Verify ServiceMonitor labels ตรงกับ Service selector
 
 ---
 

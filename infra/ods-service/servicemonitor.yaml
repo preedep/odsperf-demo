@@ -1,0 +1,21 @@
+# =============================================================================
+# ServiceMonitor for ODS Service
+# Enables Prometheus to scrape metrics from /metrics endpoint
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ods-service
+  namespace: ods-service
+  labels:
+    app: ods-service
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: ods-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
