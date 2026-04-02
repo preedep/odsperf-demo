@@ -673,14 +673,47 @@ make port-forward-prometheus   # http://localhost:9090
 
 ### Grafana Dashboards
 
-หลัง login → **Dashboards → ODS Performance**:
+Dashboards ทั้งหมดอยู่ใน folder **ODS Performance** (จัดกลุ่มอัตโนมัติ):
 
-| Dashboard          | รายละเอียด                               |
-|-------------------|------------------------------------------|
-| ODS Service Performance | TPS, Latency (p50/p95/p99), HTTP status codes — [ดูวิธีติดตั้ง](docs/grafana-dashboard.md) |
-| PostgreSQL         | Query stats, connections, cache hit rate |
-| MongoDB            | Operations/sec, document reads, latency  |
-| Kubernetes Cluster | CPU, Memory, Pod status                  |
+```mermaid
+graph TD
+    subgraph GrafanaFolder["📁 Grafana Folder: ODS Performance"]
+        D1["📊 ODS Service Performance\nTPS · Latency p50/p95/p99\nHTTP Status Codes · Error Rate\nuid: ods-service-perf"]
+        D2["🐘 PostgreSQL\nQuery stats · Connections\nCache hit rate · Table size"]
+        D3["🍃 MongoDB\nOps/sec · Document reads\nWiredTiger cache · Latency"]
+        D4["☸️ Kubernetes Cluster\nCPU · Memory\nPod status · Network"]
+    end
+
+    CM["ConfigMap\nods-service-dashboard\ngrafana_folder: ODS Performance"]
+    HV["Helm values\ndashboards.default.*\ngnetId: 9628 / 2583 / 7249"]
+
+    CM -->|"sidecar reload ~30s"| D1
+    HV -->|"Helm provision"| D2
+    HV -->|"Helm provision"| D3
+    HV -->|"Helm provision"| D4
+```
+
+**ติดตั้ง / อัปเดต Dashboard ConfigMap:**
+
+```bash
+# Apply ครั้งแรก (หรือหลังแก้ไข JSON)
+cd infra
+make dashboards
+
+# หรือรัน kubectl โดยตรง
+kubectl apply -f infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml
+
+# Grafana sidecar จะ reload อัตโนมัติภายใน ~30 วินาที
+# ไม่จำเป็นต้อง restart Grafana pod
+```
+
+**ไฟล์ที่เกี่ยวข้อง:**
+
+| ไฟล์                                                              | หน้าที่                                             |
+|------------------------------------------------------------------|-----------------------------------------------------|
+| `infra/monitoring/dashboards/ods-service-dashboard.json`         | Dashboard JSON (source of truth — แก้ไขไฟล์นี้)     |
+| `infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml` | K8s ConfigMap ที่ wrap JSON + annotation folder      |
+| `infra/monitoring/kube-prometheus-values.yaml`                   | Grafana sidecar config (`folderAnnotation`)         |
 
 ---
 

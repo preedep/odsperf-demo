@@ -51,6 +51,13 @@ grafana:
       searchNamespace: ALL
       label: grafana_dashboard
       labelValue: "1"
+      # Read grafana_folder annotation from ConfigMap to place dashboard in the correct folder
+      # Without this, the annotation is ignored and dashboards land in General
+      folderAnnotation: grafana_folder
+      provider:
+        # Allow sidecar to create folders on the fly (required for folderAnnotation to work)
+        foldersFromFilesStructure: false
+        allowUiUpdates: true
     datasources:
       enabled: true
 
