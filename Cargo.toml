@@ -54,8 +54,8 @@ tracing                = "0.1"
 tracing-subscriber     = { version = "0.3", features = ["env-filter", "json"] }
 
 # ── Metrics ────────────────────────────────────────────────────────────────
-metrics                = "0.21"
-metrics-exporter-prometheus = "0.13"
+metrics                     = "0.22"   # must match version used by metrics-exporter-prometheus
+metrics-exporter-prometheus = "0.13"   # pulls metrics 0.22 — same registry, recorder works
 
 # ── Error handling ─────────────────────────────────────────────────────────
 thiserror = "1"

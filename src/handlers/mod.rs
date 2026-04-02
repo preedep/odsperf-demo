@@ -82,18 +82,33 @@ pub fn router(state: Arc<AppState>, metrics_handle: PrometheusHandle) -> Router 
 }
 
 async fn metrics_middleware(req: Request, next: Next) -> impl IntoResponse {
+    // Skip /metrics scrape endpoint to avoid self-referential noise
     let path = req.uri().path().to_string();
+    if path == "/metrics" {
+        return next.run(req).await;
+    }
+
     let method = req.method().to_string();
-    
-    let start = std::time::Instant::now();
+
+    let start    = std::time::Instant::now();
     let response = next.run(req).await;
-    let latency = start.elapsed();
-    
-    let status = response.status().as_u16();
-    
-    // Record metrics with labels
-    metrics::increment_counter!("http_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status.to_string());
-    metrics::histogram!("http_request_duration_seconds", latency.as_secs_f64(), "method" => method, "path" => path);
-    
+    let latency  = start.elapsed();
+
+    let status = response.status().as_u16().to_string();
+
+    // metrics 0.22 builder API — uses the same global registry as PrometheusRecorder
+    // Old metrics 0.21 API (increment_counter! / histogram!(name, value, ...)) wrote
+    // to a separate registry instance and never reached the Prometheus exporter.
+    metrics::counter!("http_requests_total",
+        "method" => method.clone(),
+        "path"   => path.clone(),
+        "status" => status
+    ).increment(1);
+
+    metrics::histogram!("http_request_duration_seconds",
+        "method" => method,
+        "path"   => path
+    ).record(latency.as_secs_f64());
+
     response
 }

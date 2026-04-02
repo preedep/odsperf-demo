@@ -269,6 +269,15 @@ mongodb:
 # UTILITIES
 # =============================================================================
 
+# =============================================================================
+# ODS Service Istio config (mTLS permissive for Prometheus scraping)
+# =============================================================================
+.PHONY: ods-istio
+ods-istio:
+	$(call log_info,Applying ODS Service Istio PeerAuthentication \(allow Prometheus scraping\)...)
+	kubectl apply -f ods-service/peer-authentication.yaml
+	$(call log_info,PeerAuthentication applied — Prometheus can now scrape port 8080 in plaintext)
+
 .PHONY: status
 status:
 	@echo ""
