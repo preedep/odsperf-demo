@@ -258,9 +258,29 @@ mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 
 ทั้ง PostgreSQL และ MongoDB ต้องใช้ **ข้อมูลชุดเดียวกัน** เพื่อให้ benchmark เปรียบเทียบได้จริง (apple-to-apple)
 
-```
-generate_csv  ──→  data/mock_transactions.csv  ──→  load_pg    → PostgreSQL
-                                                └──→  load_mongo → MongoDB
+```mermaid
+graph LR
+    subgraph GEN["Step 1 — No DB dependency"]
+        GenBin["⚙️ generate_csv\nsrc/bin/generate_csv.rs"]
+    end
+
+    CSV[("📄 data/mock_transactions.csv\n1,000,000 rows · ~113 MB\nสร้างครั้งเดียว — ใช้ร่วมกัน")]
+
+    subgraph LOAD["Step 2 & 3 — Load ข้อมูลชุดเดียวกัน"]
+        LoadPG["⚙️ load_pg\nsrc/bin/load_pg.rs\nbatch INSERT 5,000 rows"]
+        LoadMongo["⚙️ load_mongo\nsrc/bin/load_mongo.rs\nbatch insert_many 5,000 docs"]
+    end
+
+    subgraph DBS["Databases"]
+        PG["🐘 PostgreSQL\nON CONFLICT DO NOTHING\nidempotent"]
+        Mongo["🍃 MongoDB\ninsert_many\nbson::DateTime / Decimal128"]
+    end
+
+    GenBin -->|"seed.sh --csv-only"| CSV
+    CSV -->|"seed.sh --pg-only"| LoadPG
+    CSV -->|"seed.sh --mongo-only"| LoadMongo
+    LoadPG --> PG
+    LoadMongo --> Mongo
 ```
 
 | Binary                    | หน้าที่                                    |
@@ -636,30 +656,53 @@ make port-forward-prometheus   # http://localhost:9090
 
 ## Architecture Overview
 
-```
-                         Internet / Local
-                               │
-                    ┌──────────▼──────────┐
-                    │    Istio Gateway     │  namespace: ingress
-                    │   (Gateway API v1)   │
-                    └───┬─────┬─────┬─────┘
-                        │     │     │
-              ods.local  │     │     │  grafana.local / prometheus.local
-                        │     │     │
-               ┌────────▼┐    │    ┌▼────────────────┐
-               │   ODS   │    │    │  Grafana         │  namespace: monitoring
-               │ Service │    │    │  Prometheus      │
-               │ (Rust)  │    │    └──────────────────┘
-               └──┬───┬──┘    │           │ scrape metrics
-         POST /v1 │   │       │    ┌──────┴──────┐
-         query-pg │   │       │    │             │
-                  │   │ query  │   │             │
-                  │   │ -mongo │  ┌▼──────────┐ ┌▼──────────────┐
-      ┌───────────▼┐  └───────▼┐ │ pg_export │ │ mongo_exporter │
-      │ PostgreSQL │  │ MongoDB │ └───────────┘ └───────────────┘
-      │ database-pg│  │ database│
-      │ -mongo     │  └─────────┘
-      └────────────┘
+```mermaid
+graph TD
+    Client(["👤 Developer / Client"])
+
+    subgraph NS_INGRESS["📦 namespace: ingress"]
+        GW["🔀 Istio Gateway\nGateway API v1\nHTTPRoute + ReferenceGrant"]
+    end
+
+    subgraph NS_ODS["📦 namespace: ods-service  〔Istio sidecar〕"]
+        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-mongo"]
+    end
+
+    subgraph NS_MON["📦 namespace: monitoring  〔Istio sidecar〕"]
+        Grafana["📈 Grafana\nDashboards · admin/admin"]
+        Prom["📊 Prometheus\nMetrics Store"]
+    end
+
+    subgraph NS_PG["📦 namespace: database-pg"]
+        PG["🐘 PostgreSQL 16\nodsperf.account_transaction\nschema + indexes"]
+        PGExp["postgres_exporter\n:9187"]
+    end
+
+    subgraph NS_MONGO["📦 namespace: database-mongo"]
+        Mongo["🍃 MongoDB 8.x\nodsperf.account_transaction\ncollection + indexes"]
+        MongoExp["mongodb_exporter\n:9216"]
+    end
+
+    %% Ingress traffic
+    Client -->|"HTTP — ods.local"| GW
+    Client -->|"HTTP — grafana.local"| GW
+    Client -->|"HTTP — prometheus.local"| GW
+
+    %% Gateway routing
+    GW -->|"ods.local → :8080"| ODS
+    GW -->|"grafana.local → :3000"| Grafana
+    GW -->|"prometheus.local → :9090"| Prom
+
+    %% Application → Database
+    ODS -->|"sqlx · batch SELECT\nby iacct + date range"| PG
+    ODS -->|"mongodb driver · find\nby iacct + dtrans range"| Mongo
+
+    %% Monitoring pipeline
+    PGExp -.->|"collect metrics"| PG
+    MongoExp -.->|"collect metrics"| Mongo
+    Prom -.->|"scrape :9187"| PGExp
+    Prom -.->|"scrape :9216"| MongoExp
+    Grafana -->|"PromQL query"| Prom
 ```
 
 ---
