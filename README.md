@@ -40,10 +40,12 @@ echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hos
 kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
 
-# 4. สร้าง PostgreSQL schema
-./scripts/init-pg-schema.sh
+# 4. สร้าง Database schema
+./scripts/init-pg-schema.sh       # PostgreSQL schema + table
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" infra/mongodb/init-schema.js
+./scripts/init-mongo-indexes.sh   # MongoDB indexes
 
-# 5. Generate และ load ข้อมูล (1M rows)
+# 5. Generate และ load ข้อมูล (1M rows ชุดเดียวกันทั้ง 2 DB)
 ./scripts/seed.sh
 
 # 6. Build และ Deploy ODS Service
@@ -71,12 +73,14 @@ odsperf-demo/
 │   └── mock_transactions.csv           # 1M rows — shared source for PG + Mongo
 ├── docs/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
-│   └── api-reference.md                # REST API specification
+│   ├── api-reference.md                # REST API specification
+│   └── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
 ├── scripts/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
+│   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
 │   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
-│   ├── test-api.sh                     # Shell script ทดสอบ API (PG + Mongo)
+│   ├── test-api.sh                     # Shell script ทดสอบ API + Comparison summary
 │   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -85,7 +89,10 @@ odsperf-demo/
 │   │   ├── httproute.yaml              # HTTP Routes: Grafana, Prometheus, ODS
 │   │   └── reference-grants.yaml       # Cross-namespace ReferenceGrants
 │   ├── monitoring/
-│   │   └── kube-prometheus-values.yaml # Prometheus + Grafana Helm values
+│   │   ├── kube-prometheus-values.yaml # Prometheus + Grafana Helm values
+│   │   └── dashboards/
+│   │       ├── ods-service-dashboard.json         # Grafana dashboard JSON
+│   │       └── ods-service-dashboard-configmap.yaml # Dashboard ConfigMap
 │   ├── postgresql/
 │   │   ├── values.yaml                 # PostgreSQL Helm values
 │   │   └── init-schema.sql             # DDL — odsperf.account_transaction
@@ -94,10 +101,11 @@ odsperf-demo/
 │   │   └── init-schema.js              # Collection + $jsonSchema validator
 │   ├── ods-service/
 │   │   ├── deployment.yaml             # Deployment: odsperf-demo image
-│   │   └── service.yaml                # ClusterIP Service port 80→8080
+│   │   ├── service.yaml                # ClusterIP Service port 80→8080
+│   │   └── servicemonitor.yaml         # Prometheus ServiceMonitor
 │   └── Makefile                        # Orchestrate deployment commands
 ├── src/
-│   ├── main.rs                         # Entry point: init logging, DB, server
+│   ├── main.rs                         # Entry point: init logging, DB, metrics, server
 │   ├── config.rs                       # Config จาก environment variables
 │   ├── error.rs                        # AppError → HTTP response (thiserror)
 │   ├── state.rs                        # AppState: PgPool + MongoDB Database
@@ -106,7 +114,7 @@ odsperf-demo/
 │   │   ├── postgres.rs                 # PgPoolOptions::connect()
 │   │   └── mongodb.rs                  # Client::with_uri_str() + ping
 │   ├── handlers/
-│   │   ├── mod.rs                      # Router + middleware stack
+│   │   ├── mod.rs                      # Router + middleware (metrics, tracing)
 │   │   ├── health.rs                   # GET  /health
 │   │   ├── pg.rs                       # POST /v1/query-pg
 │   │   └── mongo.rs                    # POST /v1/query-mongo
@@ -232,14 +240,15 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 
 ### MongoDB
 
-สร้าง collection พร้อม `$jsonSchema` validator (strict validation ระดับ DB):
+สร้าง collection พร้อม `$jsonSchema` validator และ indexes:
 
 ```bash
-# Port-forward แล้วรัน script
-make port-forward-mongodb &
-sleep 2
+# สร้าง collection + schema validator
 mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
-  mongodb/init-schema.js   # รันจากภายใน infra/
+  infra/mongodb/init-schema.js   # รันจาก project root
+
+# สร้าง indexes
+./scripts/init-mongo-indexes.sh
 ```
 
 ดูรายละเอียด schema ทั้งหมดได้ที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
@@ -254,9 +263,29 @@ mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 
 ทั้ง PostgreSQL และ MongoDB ต้องใช้ **ข้อมูลชุดเดียวกัน** เพื่อให้ benchmark เปรียบเทียบได้จริง (apple-to-apple)
 
-```
-generate_csv  ──→  data/mock_transactions.csv  ──→  load_pg    → PostgreSQL
-                                                └──→  load_mongo → MongoDB
+```mermaid
+graph LR
+    subgraph GEN["Step 1 — No DB dependency"]
+        GenBin["⚙️ generate_csv\nsrc/bin/generate_csv.rs"]
+    end
+
+    CSV[("📄 data/mock_transactions.csv\n1,000,000 rows · ~113 MB\nสร้างครั้งเดียว — ใช้ร่วมกัน")]
+
+    subgraph LOAD["Step 2 & 3 — Load ข้อมูลชุดเดียวกัน"]
+        LoadPG["⚙️ load_pg\nsrc/bin/load_pg.rs\nbatch INSERT 5,000 rows"]
+        LoadMongo["⚙️ load_mongo\nsrc/bin/load_mongo.rs\nbatch insert_many 5,000 docs"]
+    end
+
+    subgraph DBS["Databases"]
+        PG["🐘 PostgreSQL\nON CONFLICT DO NOTHING\nidempotent"]
+        Mongo["🍃 MongoDB\ninsert_many\nbson::DateTime / Decimal128"]
+    end
+
+    GenBin -->|"seed.sh --csv-only"| CSV
+    CSV -->|"seed.sh --pg-only"| LoadPG
+    CSV -->|"seed.sh --mongo-only"| LoadMongo
+    LoadPG --> PG
+    LoadMongo --> Mongo
 ```
 
 | Binary                    | หน้าที่                                    |
@@ -460,6 +489,30 @@ kubectl get svc -n ingress
 echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hosts
 ```
 
+### 4.5 Deploy Monitoring Dashboard (Optional)
+
+ODS Service มี Prometheus metrics endpoint (`/metrics`) สำหรับติดตาม TPS และ latency
+
+```bash
+# 1. Deploy ServiceMonitor (ให้ Prometheus scrape metrics)
+kubectl apply -f infra/ods-service/servicemonitor.yaml
+
+# 2. Deploy Grafana Dashboard
+kubectl apply -f infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml
+
+# 3. Verify metrics endpoint
+kubectl port-forward -n ods-service svc/ods-service 8080:80 &
+curl http://localhost:8080/metrics
+```
+
+**Metrics ที่ expose:**
+- `http_requests_total{method, path, status}` — Request counter
+- `http_request_duration_seconds{method, path}` — Latency histogram (p50, p95, p99)
+
+**เข้าถึง Dashboard:**
+- Grafana → Dashboards → ODS folder → **"ODS Service Performance"**
+- ดูรายละเอียดเพิ่มเติม: [docs/grafana-dashboard.md](docs/grafana-dashboard.md)
+
 ### Environment Variables
 
 | Variable           | Required | Default   | Description                       |
@@ -620,42 +673,99 @@ make port-forward-prometheus   # http://localhost:9090
 
 ### Grafana Dashboards
 
-หลัง login → **Dashboards → ODS Performance**:
+Dashboards ทั้งหมดอยู่ใน folder **ODS Performance** (จัดกลุ่มอัตโนมัติ):
 
-| Dashboard          | รายละเอียด                               |
-|-------------------|------------------------------------------|
-| PostgreSQL         | Query stats, connections, cache hit rate |
-| MongoDB            | Operations/sec, document reads, latency  |
-| Kubernetes Cluster | CPU, Memory, Pod status                  |
+```mermaid
+graph TD
+    subgraph GrafanaFolder["📁 Grafana Folder: ODS Performance"]
+        D1["📊 ODS Service Performance\nTPS · Latency p50/p95/p99\nHTTP Status Codes · Error Rate\nuid: ods-service-perf"]
+        D2["🐘 PostgreSQL\nQuery stats · Connections\nCache hit rate · Table size"]
+        D3["🍃 MongoDB\nOps/sec · Document reads\nWiredTiger cache · Latency"]
+        D4["☸️ Kubernetes Cluster\nCPU · Memory\nPod status · Network"]
+    end
+
+    CM["ConfigMap\nods-service-dashboard\ngrafana_folder: ODS Performance"]
+    HV["Helm values\ndashboards.default.*\ngnetId: 9628 / 2583 / 7249"]
+
+    CM -->|"sidecar reload ~30s"| D1
+    HV -->|"Helm provision"| D2
+    HV -->|"Helm provision"| D3
+    HV -->|"Helm provision"| D4
+```
+
+**ติดตั้ง / อัปเดต Dashboard ConfigMap:**
+
+```bash
+# Apply ครั้งแรก (หรือหลังแก้ไข JSON)
+cd infra
+make dashboards
+
+# หรือรัน kubectl โดยตรง
+kubectl apply -f infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml
+
+# Grafana sidecar จะ reload อัตโนมัติภายใน ~30 วินาที
+# ไม่จำเป็นต้อง restart Grafana pod
+```
+
+**ไฟล์ที่เกี่ยวข้อง:**
+
+| ไฟล์                                                              | หน้าที่                                             |
+|------------------------------------------------------------------|-----------------------------------------------------|
+| `infra/monitoring/dashboards/ods-service-dashboard.json`         | Dashboard JSON (source of truth — แก้ไขไฟล์นี้)     |
+| `infra/monitoring/dashboards/ods-service-dashboard-configmap.yaml` | K8s ConfigMap ที่ wrap JSON + annotation folder      |
+| `infra/monitoring/kube-prometheus-values.yaml`                   | Grafana sidecar config (`folderAnnotation`)         |
 
 ---
 
 ## Architecture Overview
 
-```
-                         Internet / Local
-                               │
-                    ┌──────────▼──────────┐
-                    │    Istio Gateway     │  namespace: ingress
-                    │   (Gateway API v1)   │
-                    └───┬─────┬─────┬─────┘
-                        │     │     │
-              ods.local  │     │     │  grafana.local / prometheus.local
-                        │     │     │
-               ┌────────▼┐    │    ┌▼────────────────┐
-               │   ODS   │    │    │  Grafana         │  namespace: monitoring
-               │ Service │    │    │  Prometheus      │
-               │ (Rust)  │    │    └──────────────────┘
-               └──┬───┬──┘    │           │ scrape metrics
-         POST /v1 │   │       │    ┌──────┴──────┐
-         query-pg │   │       │    │             │
-                  │   │ query  │   │             │
-                  │   │ -mongo │  ┌▼──────────┐ ┌▼──────────────┐
-      ┌───────────▼┐  └───────▼┐ │ pg_export │ │ mongo_exporter │
-      │ PostgreSQL │  │ MongoDB │ └───────────┘ └───────────────┘
-      │ database-pg│  │ database│
-      │ -mongo     │  └─────────┘
-      └────────────┘
+```mermaid
+graph TD
+    Client(["👤 Developer / Client"])
+
+    subgraph NS_INGRESS["📦 namespace: ingress"]
+        GW["🔀 Istio Gateway\nGateway API v1\nHTTPRoute + ReferenceGrant"]
+    end
+
+    subgraph NS_ODS["📦 namespace: ods-service  〔Istio sidecar〕"]
+        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-mongo"]
+    end
+
+    subgraph NS_MON["📦 namespace: monitoring  〔Istio sidecar〕"]
+        Grafana["📈 Grafana\nDashboards · admin/admin"]
+        Prom["📊 Prometheus\nMetrics Store"]
+    end
+
+    subgraph NS_PG["📦 namespace: database-pg"]
+        PG["🐘 PostgreSQL 16\nodsperf.account_transaction\nschema + indexes"]
+        PGExp["postgres_exporter\n:9187"]
+    end
+
+    subgraph NS_MONGO["📦 namespace: database-mongo"]
+        Mongo["🍃 MongoDB 8.x\nodsperf.account_transaction\ncollection + indexes"]
+        MongoExp["mongodb_exporter\n:9216"]
+    end
+
+    %% Ingress traffic
+    Client -->|"HTTP — ods.local"| GW
+    Client -->|"HTTP — grafana.local"| GW
+    Client -->|"HTTP — prometheus.local"| GW
+
+    %% Gateway routing
+    GW -->|"ods.local → :8080"| ODS
+    GW -->|"grafana.local → :3000"| Grafana
+    GW -->|"prometheus.local → :9090"| Prom
+
+    %% Application → Database
+    ODS -->|"sqlx · batch SELECT\nby iacct + date range"| PG
+    ODS -->|"mongodb driver · find\nby iacct + dtrans range"| Mongo
+
+    %% Monitoring pipeline
+    PGExp -.->|"collect metrics"| PG
+    MongoExp -.->|"collect metrics"| Mongo
+    Prom -.->|"scrape :9187"| PGExp
+    Prom -.->|"scrape :9216"| MongoExp
+    Grafana -->|"PromQL query"| Prom
 ```
 
 ---
@@ -733,11 +843,35 @@ head -10 Dockerfile
 ### Prometheus ไม่เห็น Metrics
 
 ```bash
+# ตรวจสอบ ServiceMonitor ทั้งหมด
 kubectl get servicemonitor -n monitoring
 kubectl get servicemonitor -n database-pg
 kubectl get servicemonitor -n database-mongo
-# เช็ค target: http://localhost:9090/targets
+kubectl get servicemonitor -n ods-service
+
+# เช็ค Prometheus targets
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+# เปิด http://localhost:9090/targets
+# ควรเห็น: ods-service/ods-service/0 (1/1 up)
 ```
+
+**ตรวจสอบ ODS Service metrics endpoint:**
+```bash
+# Port-forward ODS Service
+kubectl port-forward -n ods-service svc/ods-service 8080:80
+
+# ทดสอบ metrics endpoint
+curl http://localhost:8080/metrics
+
+# ควรเห็น metrics เช่น:
+# http_requests_total{method="GET",path="/health",status="200"} 5
+# http_request_duration_seconds_bucket{method="POST",path="/v1/query-pg",le="0.005"} 10
+```
+
+**ถ้า metrics ไม่มี:**
+- ตรวจสอบว่า ODS Service ถูก rebuild ด้วย metrics support
+- ดู logs: `kubectl logs -n ods-service -l app=ods-service`
+- Verify ServiceMonitor labels ตรงกับ Service selector
 
 ---
 

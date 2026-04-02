@@ -1,0 +1,23 @@
+# =============================================================================
+# PeerAuthentication — Allow Prometheus to scrape ODS Service
+#
+# Problem: Prometheus scrapes pod IPs directly (not through mesh Service).
+# When Istio sidecar is present in ods-service namespace, inbound connections
+# from Prometheus (which may not present a client cert) get rejected under
+# STRICT mTLS. Setting PERMISSIVE allows both mTLS (mesh traffic) and
+# plaintext (Prometheus scrape) on the same port.
+# =============================================================================
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: ods-service-metrics-permissive
+  namespace: ods-service
+spec:
+  selector:
+    matchLabels:
+      app: ods-service
+  mtls:
+    mode: PERMISSIVE          # mesh traffic still uses mTLS; Prometheus plaintext allowed
+  portLevelMtls:
+    "8080":
+      mode: PERMISSIVE        # explicitly allow plaintext on metrics port

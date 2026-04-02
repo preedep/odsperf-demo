@@ -80,6 +80,7 @@ help:
 	@echo "    gateway            Apply Istio Gateway + HTTPRoute resources"
 	@echo "    monitoring         Install kube-prometheus-stack (Prometheus + Grafana)"
 	@echo "    monitoring-mtls    Configure Istio mTLS for monitoring (fix Grafana dashboards)"
+	@echo "    dashboards         Apply Grafana dashboard ConfigMaps -> folder: ODS Performance"
 	@echo "    postgresql         Install PostgreSQL  -> namespace: $(NS_PG)"
 	@echo "    mongodb            Install MongoDB     -> namespace: $(NS_MONGO)"
 	@echo ""
@@ -120,7 +121,7 @@ prerequisites:
 # ALL - Deploy everything in order
 # =============================================================================
 .PHONY: all
-all: prerequisites gateway-api-crds namespaces istio gateway monitoring monitoring-mtls postgresql mongodb
+all: prerequisites gateway-api-crds namespaces istio gateway monitoring monitoring-mtls dashboards postgresql mongodb
 	@echo ""
 	$(call log_info,==========================================)
 	$(call log_info,All infrastructure deployed successfully!)
@@ -202,7 +203,20 @@ monitoring:
 	$(call log_info,Monitoring stack installed)
 
 # =============================================================================
-# STEP 5b: Monitoring mTLS Configuration
+# STEP 5b: Grafana Dashboard ConfigMaps
+# =============================================================================
+.PHONY: dashboards
+dashboards:
+	$(call log_info,[5c] Applying Grafana dashboard ConfigMaps -> folder: ODS Performance...)
+	kubectl apply -f monitoring/dashboards/ods-service-dashboard-configmap.yaml
+	$(call log_info,Dashboard ConfigMaps applied - Grafana sidecar will reload within 30s)
+	@echo ""
+	@echo "  Folder  : ODS Performance"
+	@echo "  Dashboard: ODS Service Performance (uid: ods-service-perf)"
+	@echo ""
+
+# =============================================================================
+# STEP 5c: Monitoring mTLS Configuration
 # =============================================================================
 .PHONY: monitoring-mtls
 monitoring-mtls:
@@ -254,6 +268,15 @@ mongodb:
 # =============================================================================
 # UTILITIES
 # =============================================================================
+
+# =============================================================================
+# ODS Service Istio config (mTLS permissive for Prometheus scraping)
+# =============================================================================
+.PHONY: ods-istio
+ods-istio:
+	$(call log_info,Applying ODS Service Istio PeerAuthentication \(allow Prometheus scraping\)...)
+	kubectl apply -f ods-service/peer-authentication.yaml
+	$(call log_info,PeerAuthentication applied — Prometheus can now scrape port 8080 in plaintext)
 
 .PHONY: status
 status:

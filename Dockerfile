@@ -30,6 +30,9 @@ COPY src ./src
 RUN touch src/main.rs
 RUN cargo build --release --locked --bin odsperf-demo
 
+# Strip debug symbols to reduce binary size (~50-70% smaller)
+RUN strip target/release/odsperf-demo
+
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 

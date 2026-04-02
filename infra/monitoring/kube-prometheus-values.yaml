@@ -45,6 +45,7 @@ grafana:
     type: ClusterIP
 
   # Auto-provision dashboards from ConfigMaps labelled grafana_dashboard=1
+  # Used for other future dashboards; ODS Service dashboard uses dashboardsConfigMaps instead
   sidecar:
     dashboards:
       enabled: true
@@ -54,7 +55,7 @@ grafana:
     datasources:
       enabled: true
 
-  # Pre-load dashboards from grafana.com
+  # Pre-load dashboards from grafana.com + ConfigMaps
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -67,6 +68,21 @@ grafana:
           editable: true
           options:
             path: /var/lib/grafana/dashboards/default
+        # Separate provider for custom ConfigMap dashboards
+        # Must use different name/path to avoid duplicate volume 'dashboards-default'
+        - name: ods-custom
+          orgId: 1
+          folder: "ODS Performance"
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/ods-custom
+
+  # Mount ConfigMap into 'ods-custom' provider path → folder: ODS Performance
+  # Cannot reuse 'default' key — would create duplicate volume name dashboards-default
+  dashboardsConfigMaps:
+    ods-custom: ods-service-dashboard
 
   dashboards:
     default:
