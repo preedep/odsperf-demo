@@ -19,6 +19,18 @@ path = "src/bin/load_pg.rs"
 name = "load_mongo"
 path = "src/bin/load_mongo.rs"
 
+[[bin]]
+name = "generate_account_csv"
+path = "src/bin/generate_account_csv.rs"
+
+[[bin]]
+name = "load_pg_accounts"
+path = "src/bin/load_pg_accounts.rs"
+
+[[bin]]
+name = "load_mongo_accounts"
+path = "src/bin/load_mongo_accounts.rs"
+
 # ── Legacy (kept for reference, superseded by generate_csv + load_pg/load_mongo) ──
 [[bin]]
 name = "generate_mock_data"
@@ -27,6 +39,10 @@ path = "src/bin/generate_mock_data.rs"
 [[bin]]
 name = "generate_mock_data_mongo"
 path = "src/bin/generate_mock_data_mongo.rs"
+
+[[bin]]
+name = "test_hot_document"
+path = "src/bin/test_hot_document.rs"
 
 [dependencies]
 # ── Web framework ──────────────────────────────────────────────────────────
@@ -65,6 +81,7 @@ anyhow    = "1"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 csv  = "1"
+sysinfo = "0.30"  # System metrics (CPU, memory)
 
 # ── Release Profile Optimization ──────────────────────────────────────────
 [profile.release]

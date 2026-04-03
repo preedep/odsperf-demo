@@ -78,12 +78,40 @@ pub async fn handle(
     let cursor = collection
         .find(filter)
         .sort(sort)
-        .await?;
+        .await
+        .map_err(|e| {
+            // Counter: database errors
+            metrics::counter!("db_errors_total",
+                "database" => "mongodb",
+                "operation" => "find"
+            ).increment(1);
+            e
+        })?;
 
-    let rows: Vec<MongoTransaction> = cursor.try_collect().await?;
+    let rows: Vec<MongoTransaction> = cursor.try_collect().await
+        .map_err(|e| {
+            metrics::counter!("db_errors_total",
+                "database" => "mongodb",
+                "operation" => "collect"
+            ).increment(1);
+            e
+        })?;
 
-    let elapsed_ms = timer.elapsed().as_millis();
-    let total      = rows.len();
+    let elapsed = timer.elapsed();
+    let elapsed_ms = elapsed.as_millis();
+    let total = rows.len();
+    
+    // Histogram: query duration
+    metrics::histogram!("db_query_duration_seconds",
+        "database" => "mongodb",
+        "operation" => "find"
+    ).record(elapsed.as_secs_f64());
+    
+    // Counter: successful queries
+    metrics::counter!("db_queries_total",
+        "database" => "mongodb",
+        "operation" => "find"
+    ).increment(1);
 
     info!(
         request_id = %request_id,

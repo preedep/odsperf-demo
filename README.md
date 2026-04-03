@@ -40,21 +40,16 @@ echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hos
 kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
 
-# 4. สร้าง Database schema
-./scripts/init-pg-schema.sh       # PostgreSQL schema + table
-mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" infra/mongodb/init-schema.js
-./scripts/init-mongo-indexes.sh   # MongoDB indexes
-
-# 5. Generate และ load ข้อมูล (1M rows ชุดเดียวกันทั้ง 2 DB)
+# 4. Generate และ load ข้อมูล (รวมสร้าง schema + indexes อัตโนมัติ)
 ./scripts/seed.sh
 
-# 6. Build และ Deploy ODS Service
+# 5. Build และ Deploy ODS Service
 ./scripts/deploy-ods.sh
 
-# 7. ทดสอบ API
+# 6. ทดสอบ API
 ./scripts/test-api.sh --repeat 10
 
-# 8. เปิด Grafana Dashboard
+# 7. เปิด Grafana Dashboard
 # http://grafana.local (admin/admin)
 ```
 
@@ -74,14 +69,18 @@ odsperf-demo/
 ├── docs/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
 │   ├── api-reference.md                # REST API specification
-│   └── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
+│   ├── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
+│   └── hot-document-test.md            # Hot document write performance test guide
 ├── scripts/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
-│   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
+│   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service (รองรับ --force)
 │   ├── test-api.sh                     # Shell script ทดสอบ API + Comparison summary
-│   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
+│   ├── test-hot-document.sh            # ทดสอบ hot document write performance (MongoDB)
+│   ├── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
+│   ├── check-metrics.sh                # ตรวจสอบ Prometheus metrics จาก ODS Service
+│   └── update-dashboard-configmap.sh   # อัปเดต Grafana dashboard ConfigMap
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
 │   ├── istio/
@@ -108,20 +107,23 @@ odsperf-demo/
 │   ├── main.rs                         # Entry point: init logging, DB, metrics, server
 │   ├── config.rs                       # Config จาก environment variables
 │   ├── error.rs                        # AppError → HTTP response (thiserror)
-│   ├── state.rs                        # AppState: PgPool + MongoDB Database
+│   ├── state.rs                        # AppState: PgPool + MongoDB Database + pool metrics
 │   ├── models.rs                       # Request / Response / DTO structs
+│   ├── metrics_collector.rs            # System metrics collector (CPU, Memory)
 │   ├── db/
 │   │   ├── postgres.rs                 # PgPoolOptions::connect()
 │   │   └── mongodb.rs                  # Client::with_uri_str() + ping
 │   ├── handlers/
-│   │   ├── mod.rs                      # Router + middleware (metrics, tracing)
+│   │   ├── mod.rs                      # Router + middleware (HTTP metrics, tracing)
 │   │   ├── health.rs                   # GET  /health
-│   │   ├── pg.rs                       # POST /v1/query-pg
-│   │   └── mongo.rs                    # POST /v1/query-mongo
+│   │   ├── pg.rs                       # POST /v1/query-pg (with DB metrics)
+│   │   ├── pg_join.rs                  # POST /v1/query-pg-join
+│   │   └── mongo.rs                    # POST /v1/query-mongo (with DB metrics)
 │   └── bin/
 │       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
 │       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
-│       └── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
+│       ├── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
+│       └── test_hot_document.rs        # Hot document write test (embedded arrays)
 ├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
@@ -226,12 +228,15 @@ MongoDB    : mongodb://odsuser:odspassword@mongodb.database-mongo.svc.cluster.lo
 
 ## Step 2: Database Schema
 
+> 💡 **หมายเหตุ:** ถ้าคุณใช้ `./scripts/seed.sh` (แนะนำ) จะไม่ต้องรัน scripts 
+> ในส่วนนี้แยก เพราะ `seed.sh` จะสร้าง schema, tables และ indexes ให้อัตโนมัติ
+
 ### PostgreSQL
 
 ตาราง `odsperf.account_transaction` แปลงจาก DB2 — ดูรายละเอียดที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
 
 ```bash
-# Port-forward แล้วรัน DDL
+# Port-forward แล้วรัน DDL (ถ้าต้องการสร้างแยก)
 make port-forward-postgresql &
 sleep 2
 psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
@@ -243,11 +248,11 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 สร้าง collection พร้อม `$jsonSchema` validator และ indexes:
 
 ```bash
-# สร้าง collection + schema validator
+# สร้าง collection + schema validator (ถ้าต้องการสร้างแยก)
 mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
   infra/mongodb/init-schema.js   # รันจาก project root
 
-# สร้าง indexes
+# สร้าง indexes (ถ้าต้องการสร้างแยก)
 ./scripts/init-mongo-indexes.sh
 ```
 
@@ -302,42 +307,31 @@ kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb    27017:27017 -n database-mongo &
 ```
 
-### 3.2 สร้าง PostgreSQL Schema (ครั้งแรกเท่านั้น)
-
-**สำคัญ:** ต้องรัน script นี้ก่อนครั้งแรก เพื่อสร้าง schema และ table
-
-```bash
-./scripts/init-pg-schema.sh
-```
-
-Script จะ:
-- สร้าง schema `odsperf`
-- สร้าง table `account_transaction` พร้อม primary key และ indexes
-- Verify ว่า table ถูกสร้างสำเร็จ
-
-### 3.3 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
+### 3.2 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
 
 ```bash
 ./scripts/seed.sh
 ```
 
-Script จะรัน 3 ขั้นตอนตามลำดับ:
+Script จะรัน 5 ขั้นตอนตามลำดับ:
+0. **ตรวจสอบ Schema** → สร้าง PostgreSQL/MongoDB schema + tables ถ้ายังไม่มี
 1. **Generate CSV** → `data/mock_transactions.csv` (ไม่ต่อ DB)
 2. **Load PostgreSQL** → อ่าน CSV และ insert batch ทีละ 5,000 rows
 3. **Load MongoDB** → อ่าน CSV ชุดเดียวกัน และ insert_many batch ทีละ 5,000 docs
+4. **Create Indexes** → สร้าง indexes อัตโนมัติทั้ง PostgreSQL และ MongoDB
 
-### 3.4 รันแยกทีละขั้นตอน
+> ✅ **ไม่ต้องรัน `init-pg-schema.sh` หรือ `init-mongo-indexes.sh` แยก**  
+> `seed.sh` จะจัดการให้หมดแล้ว
+
+### 3.3 รันแยกทีละขั้นตอน (ทางเลือก)
 
 ```bash
-# ขั้นตอน 0: สร้าง PostgreSQL schema (ครั้งแรกเท่านั้น)
-./scripts/init-pg-schema.sh
-
 # ขั้นตอน 1: สร้าง CSV
 cargo build --release --bin generate_csv
 ./target/release/generate_csv
 # → data/mock_transactions.csv (~100 MB, 1M rows)
 
-# ขั้นตอน 2: Load PostgreSQL
+# ขั้นตอน 2: Load PostgreSQL (สร้าง schema + indexes อัตโนมัติถ้ายังไม่มี)
 cargo build --release --bin load_pg
 DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
   ./target/release/load_pg
@@ -346,19 +340,29 @@ DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 cargo build --release --bin load_mongo
 MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
   ./target/release/load_mongo
+
+# ขั้นตอน 4: สร้าง MongoDB indexes (ถ้ารันแยก)
+./scripts/init-mongo-indexes.sh
 ```
 
-### 3.5 Options ของ seed.sh
+> 💡 **Tip:** ถ้าใช้ `seed.sh` จะไม่ต้องรัน step 4 เพราะสร้างให้อัตโนมัติแล้ว
+
+### 3.4 Options ของ seed.sh
 
 ```bash
-./scripts/seed.sh                 # full pipeline (CSV + PG + Mongo)
-./scripts/seed.sh --csv-only      # สร้าง CSV เท่านั้น
-./scripts/seed.sh --pg-only       # load PG เท่านั้น (CSV ต้องมีอยู่แล้ว)
-./scripts/seed.sh --mongo-only    # load Mongo เท่านั้น (CSV ต้องมีอยู่แล้ว)
-./scripts/seed.sh --no-mongo      # CSV + PG เท่านั้น
+./scripts/seed.sh                    # full pipeline (CSV + PG + Mongo + indexes)
+./scripts/seed.sh --accounts-only    # สร้าง account_master เท่านั้น
+./scripts/seed.sh --txn-only         # สร้าง transactions เท่านั้น (ข้าม accounts)
+./scripts/seed.sh --csv-only         # สร้าง CSV เท่านั้น
+./scripts/seed.sh --pg-only          # load PG เท่านั้น (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --mongo-only       # load Mongo + indexes (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --no-mongo         # CSV + PG เท่านั้น
+./scripts/seed.sh --no-accounts      # ข้าม account_master pipeline
 ```
 
-### ตัวอย่าง Output
+> ✅ **Indexes สร้างอัตโนมัติ** ทุกครั้งที่ load ข้อมูล
+
+### 3.5 ตัวอย่าง Output
 
 ```
 ══════ Step 1 — Generate CSV ══════
@@ -381,7 +385,7 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 🎉 MongoDB load complete! 1000000 docs — 36.8s
 ```
 
-### ข้อมูลที่ Generate
+### 3.6 ข้อมูลที่ Generate
 
 | Field       | รายละเอียด                                              |
 |------------|--------------------------------------------------------|
@@ -393,7 +397,7 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 | `cmnemo`   | DEP / WDL / TRF / CHQ / FEE / INT / ATM / POS         |
 | `cchannel` | ATM / INET / MOB / BRNC                               |
 
-### ตรวจสอบข้อมูลหลัง Generate
+### 3.7 ตรวจสอบข้อมูลหลัง Generate
 
 **PostgreSQL:**
 ```bash
@@ -445,9 +449,13 @@ Script จะทำงานอัตโนมัติ:
 ```bash
 ./scripts/deploy-ods.sh --skip-build   # Deploy only (ใช้ image ที่มีอยู่)
 ./scripts/deploy-ods.sh --build-only   # Build only (ไม่ deploy)
+./scripts/deploy-ods.sh --restart      # Force rollout restart after deploy
+./scripts/deploy-ods.sh --force        # Build with unique tag (bypass cache) - แนะนำ!
 ```
 
 > ⏱ Build ครั้งแรกประมาณ 5–10 นาที (compile + download crates)
+> 💡 **แนะนำ:** ใช้ `--force` เพื่อ build ด้วย unique tag (เช่น `v20260403-182307`) เพื่อหลีกเลี่ยงปัญหา image cache
+> 💡 รองรับทั้ง **Docker Desktop Kubernetes** และ **minikube** อัตโนมัติ
 
 ### 4.2 Deploy แบบ Manual (ทางเลือก)
 
@@ -506,12 +514,30 @@ curl http://localhost:8080/metrics
 ```
 
 **Metrics ที่ expose:**
+
+**HTTP Metrics:**
 - `http_requests_total{method, path, status}` — Request counter
 - `http_request_duration_seconds{method, path}` — Latency histogram (p50, p95, p99)
 
+**System Metrics:**
+- `process_resident_memory_bytes` — Process memory usage
+- `process_cpu_usage_percent` — CPU usage percentage
+- `node_memory_MemTotal_bytes` — Total system memory
+- `node_memory_MemUsed_bytes` — Used system memory
+- `node_memory_MemAvailable_bytes` — Available system memory
+
+**Database Metrics:**
+- `db_pool_connections_total{database}` — Total connections in pool
+- `db_pool_connections_active{database}` — Active connections
+- `db_pool_connections_idle{database}` — Idle connections
+- `db_queries_total{database, operation}` — Query counter
+- `db_errors_total{database, operation}` — Error counter
+- `db_query_duration_seconds{database, operation}` — Query duration histogram
+
 **เข้าถึง Dashboard:**
 - Grafana → Dashboards → ODS folder → **"ODS Service Performance"**
-- ดูรายละเอียดเพิ่มเติม: [docs/grafana-dashboard.md](docs/grafana-dashboard.md)
+- Dashboard แสดง 15 panels: HTTP metrics, System metrics, Database metrics
+- ดูรายละเอียดเพิ่มเติม: [docs/adding-metrics.md](docs/adding-metrics.md)
 
 ### Environment Variables
 
@@ -543,12 +569,39 @@ kubectl port-forward svc/ods-service 8080:80 -n ods-service &
 # Benchmark 10 รอบ เปรียบเทียบ latency
 ./scripts/test-api.sh --repeat 10
 
-# เทสเฉพาะ PostgreSQL หรือ MongoDB
-./scripts/test-api.sh --pg
-./scripts/test-api.sh --mongo
+# เทสเฉพาะ PostgreSQL, JOIN, หรือ MongoDB
+./scripts/test-api.sh --pg      # PostgreSQL only
+./scripts/test-api.sh --join    # PostgreSQL JOIN only
+./scripts/test-api.sh --mongo   # MongoDB only
 
 # ดู response เต็ม
 ./scripts/test-api.sh --verbose
+```
+
+### ตรวจสอบ Metrics
+
+```bash
+./scripts/check-metrics.sh
+```
+
+Script จะแสดง metrics ทั้งหมดที่ ODS Service expose:
+- **System Metrics:** Process memory, CPU usage, Node memory
+- **Database Pool Metrics:** Total, Active, Idle connections
+- **Database Query Metrics:** Query counters, Error counters
+- **Database Duration Metrics:** Query duration histogram
+- **HTTP Metrics:** Request counters, Duration histogram
+
+**ตัวอย่าง output:**
+```
+📊 Checking ODS Service metrics...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 System Metrics (Gauge):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+process_resident_memory_bytes 6651904
+process_cpu_usage_percent 0
+node_memory_MemTotal_bytes 12528861184
+...
 ```
 
 ### เปรียบเทียบ Disk Usage
@@ -586,13 +639,48 @@ Storage Efficiency:
   MongoDB   : 203.00 bytes/document
 ```
 
+### ทดสอบ Hot Document Performance (MongoDB)
+
+ทดสอบ scenario การเขียน document เดียวกันซ้ำ ๆ (hot document) โดยจำลองการทำ batch aggregation ที่ append statements เข้า array:
+
+```bash
+./scripts/test-hot-document.sh
+```
+
+**สิ่งที่ทดสอบ:**
+- 📝 Document growth performance (array append operations)
+- 🔥 Write contention บน hot documents
+- 📊 Embedded document approach (account + date + statements)
+- ⚡ Write throughput และ latency เมื่อ document โต
+- 🔑 Compound index performance `{iacct: 1, dtrans: 1}`
+
+**Test Configuration:**
+- **Collection:** `final_statements`
+- **Document structure:** 1 document = 1 account + 1 วัน (compound key)
+- **Hot accounts:** 10 accounts
+- **Hot dates:** อ่านจาก `account_transaction` (หรือ 365 วันถ้า collection ว่าง)
+- **Writes per document:** 100 ครั้ง (จำลอง batch writes ซ้ำ)
+- **Statements per write:** 10 statements
+- **Total:** ~365,000 writes, ~3,650,000 statements (ถ้ามี 365 วัน)
+
+**Document Example:**
+```json
+{
+  "iacct": "10000000000",
+  "dtrans": ISODate("2025-01-15"),
+  "statements": [/* transactions ทั้งหมดของวันนี้ */]
+}
+```
+
+ดูรายละเอียดเพิ่มเติม: [docs/hot-document-test.md](docs/hot-document-test.md)
+
 ### curl โดยตรง
 
 ```bash
 # Health check
 curl http://ods.local/health
 
-# Query PostgreSQL
+# Query PostgreSQL (transactions only)
 curl -s -X POST http://ods.local/v1/query-pg \
   -H "Content-Type: application/json" \
   -d '{
@@ -600,6 +688,15 @@ curl -s -X POST http://ods.local/v1/query-pg \
     "start_month": 1, "start_year":  2025,
     "end_month":   12, "end_year":  2025
   }' | jq '{db, total, elapsed_ms}'
+
+# Query PostgreSQL JOIN (account + transactions)
+curl -s -X POST http://ods.local/v1/query-pg-join \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "12345678901",
+    "start_month": 1, "start_year":  2025,
+    "end_month":   12, "end_year":  2025
+  }' | jq '{db, total, elapsed_ms, data: {iacct, custid, segment}}'
 
 # Query MongoDB
 curl -s -X POST http://ods.local/v1/query-mongo \
@@ -728,7 +825,7 @@ graph TD
     end
 
     subgraph NS_ODS["📦 namespace: ods-service  〔Istio sidecar〕"]
-        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-mongo"]
+        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-pg-join\nPOST /v1/query-mongo"]
     end
 
     subgraph NS_MON["📦 namespace: monitoring  〔Istio sidecar〕"]
@@ -885,3 +982,58 @@ kubectl logs -n ods-service -l app=ods-service --tail=50
 kubectl run -it --rm debug --image=curlimages/curl --restart=Never -n ods-service -- \
   curl -s postgresql.database-pg.svc.cluster.local:5432 || true
 ```
+
+---
+
+### MongoDB ช้ามาก (ช้ากว่า PostgreSQL หลายร้อยเท่า)
+
+**สาเหตุ:** MongoDB ไม่มี indexes → ใช้ collection scan
+
+**ตรวจสอบ:**
+```bash
+# Port-forward MongoDB
+kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
+
+# ดู indexes ที่มีอยู่
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" --eval "
+  db.account_transaction.getIndexes()
+"
+
+# ควรเห็น indexes อย่างน้อย 5 ตัว:
+# - _id_ (default)
+# - idx_pk_account_transaction (unique)
+# - idx_acctxn_iacct_dtrans
+# - idx_acctxn_drun
+# - idx_acctxn_camt
+```
+
+**แก้ไข:**
+```bash
+# สร้าง indexes
+./scripts/init-mongo-indexes.sh
+
+# หรือ re-seed ข้อมูลใหม่ (จะสร้าง indexes อัตโนมัติ)
+./scripts/seed.sh --mongo-only
+```
+
+**ผลลัพธ์ที่คาดหวัง:**
+- PostgreSQL: ~2-5ms (มี B-tree index)
+- MongoDB: ~5-15ms (มี index + document overhead)
+- **MongoDB ควรช้ากว่า PostgreSQL แค่ 2-5 เท่า** ไม่ใช่ 100-300 เท่า!
+
+---
+
+### init-mongo-indexes.sh Error: "Index already exists"
+
+**สาเหตุ:** Script รุ่นเก่าพยายามสร้าง index ที่มีอยู่แล้ว
+
+**แก้ไข:**
+```bash
+# Pull code ล่าสุด (มี fix แล้ว)
+git pull
+
+# รัน script อีกครั้ง (จะ skip indexes ที่มีอยู่แล้ว)
+./scripts/init-mongo-indexes.sh
+```
+
+Script รุ่นใหม่จะตรวจสอบและ skip indexes ที่มีอยู่แล้วอัตโนมัติ

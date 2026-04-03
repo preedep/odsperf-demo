@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod error;
 mod handlers;
+mod metrics_collector;
 mod models;
 mod state;
 
@@ -32,6 +33,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Initialize Prometheus metrics exporter ───────────────────────────
     let metrics_handle = init_metrics();
+
+    // ── Start metrics collectors ─────────────────────────────────────────
+    info!("starting metrics collectors");
+    metrics_collector::start_system_metrics_collector();
+    state::AppState::start_pool_metrics_collector(Arc::clone(&state));
 
     // ── Build router ─────────────────────────────────────────────────────
     let app = handlers::router(state, metrics_handle);

@@ -55,45 +55,53 @@ mongosh "$MONGODB_URI" --quiet --eval "
 echo ""
 log_info "Creating indexes to match PostgreSQL..."
 
+# Helper function to create index if it doesn't exist
+create_index_if_not_exists() {
+  local index_name="$1"
+  local index_spec="$2"
+  local index_options="$3"
+  
+  local exists=$(mongosh "$MONGODB_URI" --quiet --eval "
+    db.getSiblingDB('${MONGODB_DB}').account_transaction.getIndexes()
+      .filter(idx => idx.name === '${index_name}').length > 0
+  " 2>/dev/null | tail -1)
+  
+  if [ "$exists" = "true" ]; then
+    log_info "Index ${index_name} already exists, skipping..."
+  else
+    mongosh "$MONGODB_URI" --quiet --eval "
+      db.getSiblingDB('${MONGODB_DB}').account_transaction.createIndex(
+        ${index_spec},
+        ${index_options}
+      );
+    " || log_fail "Failed to create index: ${index_name}"
+    log_ok "Created: ${index_name}"
+  fi
+}
+
 # Index 1: Compound index on (iacct, drun, cseq) - equivalent to PRIMARY KEY
-log_info "Creating index: iacct_drun_cseq (PRIMARY KEY equivalent)..."
-mongosh "$MONGODB_URI" --quiet --eval "
-  db.getSiblingDB('${MONGODB_DB}').account_transaction.createIndex(
-    { iacct: 1, drun: 1, cseq: 1 },
-    { name: 'idx_iacct_drun_cseq', unique: true }
-  );
-" || log_fail "Failed to create index: idx_iacct_drun_cseq"
-log_ok "Created: idx_iacct_drun_cseq"
+create_index_if_not_exists \
+  "idx_pk_account_transaction" \
+  "{ iacct: 1, drun: 1, cseq: 1 }" \
+  "{ name: 'idx_pk_account_transaction', unique: true }"
 
 # Index 2: Compound index on (iacct, dtrans) - main query pattern
-log_info "Creating index: iacct_dtrans (main query pattern)..."
-mongosh "$MONGODB_URI" --quiet --eval "
-  db.getSiblingDB('${MONGODB_DB}').account_transaction.createIndex(
-    { iacct: 1, dtrans: 1 },
-    { name: 'idx_iacct_dtrans' }
-  );
-" || log_fail "Failed to create index: idx_iacct_dtrans"
-log_ok "Created: idx_iacct_dtrans"
+create_index_if_not_exists \
+  "idx_acctxn_iacct_dtrans" \
+  "{ iacct: 1, dtrans: 1 }" \
+  "{ name: 'idx_acctxn_iacct_dtrans' }"
 
 # Index 3: Single index on drun - batch processing
-log_info "Creating index: drun (batch processing)..."
-mongosh "$MONGODB_URI" --quiet --eval "
-  db.getSiblingDB('${MONGODB_DB}').account_transaction.createIndex(
-    { drun: 1 },
-    { name: 'idx_drun' }
-  );
-" || log_fail "Failed to create index: idx_drun"
-log_ok "Created: idx_drun"
+create_index_if_not_exists \
+  "idx_acctxn_drun" \
+  "{ drun: 1 }" \
+  "{ name: 'idx_acctxn_drun' }"
 
 # Index 4: Single index on camt - filter CREDIT/DEBIT
-log_info "Creating index: camt (filter CREDIT/DEBIT)..."
-mongosh "$MONGODB_URI" --quiet --eval "
-  db.getSiblingDB('${MONGODB_DB}').account_transaction.createIndex(
-    { camt: 1 },
-    { name: 'idx_camt' }
-  );
-" || log_fail "Failed to create index: idx_camt"
-log_ok "Created: idx_camt"
+create_index_if_not_exists \
+  "idx_acctxn_camt" \
+  "{ camt: 1 }" \
+  "{ name: 'idx_acctxn_camt' }"
 
 # ── Verify indexes ────────────────────────────────────────────────────────────
 echo ""

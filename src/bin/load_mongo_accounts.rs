@@ -1,10 +1,10 @@
 // =============================================================================
-// load_mongo — Load mock_transactions.csv → MongoDB
-// Reads the SAME CSV produced by generate_csv for apple-to-apple benchmark.
+// load_mongo_accounts — Load mock_accounts.csv → MongoDB account_master
+// Reads the CSV produced by generate_account_csv.
 //
 // Usage:
-//   cargo run --release --bin load_mongo
-//   CSV_PATH=data/mock_transactions.csv MONGODB_URI=... cargo run --release --bin load_mongo
+//   cargo run --release --bin load_mongo_accounts
+//   CSV_PATH=data/mock_accounts.csv MONGODB_URI=... cargo run --release --bin load_mongo_accounts
 // =============================================================================
 
 use anyhow::Result;
@@ -16,12 +16,12 @@ use std::env;
 use std::str::FromStr;
 use std::time::Instant;
 
-const BATCH_SIZE: usize = 5_000;
+const BATCH_SIZE: usize = 2_000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let csv_path = env::var("CSV_PATH")
-        .unwrap_or_else(|_| "data/mock_transactions.csv".to_string());
+        .unwrap_or_else(|_| "data/mock_accounts.csv".to_string());
 
     let mongodb_uri = env::var("MONGODB_URI")
         .unwrap_or_else(|_| {
@@ -31,9 +31,9 @@ async fn main() -> Result<()> {
     let mongodb_db = env::var("MONGODB_DB")
         .unwrap_or_else(|_| "odsperf".to_string());
 
-    println!("🚀 MongoDB CSV Loader");
+    println!("🚀 MongoDB Account Master Loader");
     println!("📁 CSV     : {}", csv_path);
-    println!("🔌 Target  : MongoDB / {}", mongodb_db);
+    println!("🔌 Target  : MongoDB / {} / account_master", mongodb_db);
 
     let client_options = ClientOptions::parse(&mongodb_uri).await?;
     let client = Client::with_options(client_options)?;
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 
     let collection = client
         .database(&mongodb_db)
-        .collection::<bson::Document>("account_transaction");
+        .collection::<bson::Document>("account_master");
 
     // Count total rows for progress display
     let total_rows = {
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
             let overall = start.elapsed().as_secs_f64();
             let speed = total_inserted as f64 / overall;
             println!(
-                "✓ Batch {:>4} | {:>9} / {} | {:.2}s batch | {:.0} docs/s",
+                "✓ Batch {:>4} | {:>7} / {} | {:.2}s batch | {:.0} docs/s",
                 batch_num, total_inserted, total_rows,
                 batch_start.elapsed().as_secs_f64(), speed
             );
@@ -87,37 +87,42 @@ async fn main() -> Result<()> {
     }
 
     let elapsed = start.elapsed();
-    println!("\n🎉 MongoDB load complete!");
+    println!("\n🎉 MongoDB account_master load complete!");
     println!("📊 Inserted : {}", total_inserted);
     println!("⏱️  Time     : {:.2}s", elapsed.as_secs_f64());
     println!(
         "⚡ Speed    : {:.0} docs/s",
         total_inserted as f64 / elapsed.as_secs_f64()
     );
-    println!("\n💡 Tip: Run ./scripts/init-mongo-indexes.sh to create indexes");
 
     Ok(())
 }
 
 // ─── CSV row → BSON Document ──────────────────────────────────────────────────
+// CSV columns: iacct, custid, ctype, dopen, dclose, cstatus, cbranch, segment, credit_limit
 fn parse_doc(r: &csv::StringRecord) -> Result<bson::Document> {
+    let dclose: Bson = if r[4].is_empty() {
+        Bson::Null
+    } else {
+        Bson::DateTime(naive_str_to_bson(&r[4])?)
+    };
+
+    let credit_limit: Bson = if r[8].is_empty() {
+        Bson::Null
+    } else {
+        Bson::Decimal128(str_to_decimal128(&r[8])?)
+    };
+
     Ok(doc! {
-        "iacct":       &r[0],
-        "drun":        Bson::DateTime(naive_str_to_bson(&r[1])?),
-        "cseq":        r[2].parse::<i32>()?,
-        "ddate":       Bson::DateTime(naive_str_to_bson(&r[3])?),
-        "dtrans":      Bson::DateTime(naive_str_to_bson(&r[4])?),
-        "ttime":       &r[5],
-        "cmnemo":      &r[6],
-        "cchannel":    &r[7],
-        "ctr":         &r[8],
-        "cbr":         &r[9],
-        "cterm":       &r[10],
-        "camt":        &r[11],
-        "aamount":     Bson::Decimal128(str_to_decimal128(&r[12])?),
-        "abal":        Bson::Decimal128(str_to_decimal128(&r[13])?),
-        "description": &r[14],
-        "time_hms":    &r[15],
+        "iacct":        &r[0],
+        "custid":       &r[1],
+        "ctype":        &r[2],
+        "dopen":        Bson::DateTime(naive_str_to_bson(&r[3])?),
+        "dclose":       dclose,
+        "cstatus":      &r[5],
+        "cbranch":      &r[6],
+        "segment":      &r[7],
+        "credit_limit": credit_limit,
     })
 }
 
@@ -129,5 +134,5 @@ fn naive_str_to_bson(s: &str) -> Result<BsonDateTime> {
 }
 
 fn str_to_decimal128(s: &str) -> Result<Decimal128> {
-    Ok(Decimal128::from_str(s).map_err(|e| anyhow::anyhow!("Decimal128 parse: {}", e))?)
+    Decimal128::from_str(s).map_err(|e| anyhow::anyhow!("Decimal128 parse: {}", e))
 }
