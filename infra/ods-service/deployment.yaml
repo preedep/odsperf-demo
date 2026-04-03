@@ -35,8 +35,7 @@ spec:
       containers:
         - name:  ods-service
           image: odsperf-demo:latest
-          # IfNotPresent = use local image if exists, pull only if not found
-          # (Docker Desktop 4.x+ uses containerd — Never can fail even if image exists in docker daemon)
+          # IfNotPresent = use local image if exists (required for minikube)
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

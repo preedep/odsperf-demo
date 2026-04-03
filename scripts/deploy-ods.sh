@@ -29,12 +29,14 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DO_BUILD=true
 DO_DEPLOY=true
 DO_RESTART=false
+DO_FORCE=false
 
 for arg in "$@"; do
   case "$arg" in
     --skip-build)  DO_BUILD=false  ;;
     --build-only)  DO_DEPLOY=false ;;
     --restart)     DO_RESTART=true ;;
+    --force)       DO_FORCE=true   ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -42,10 +44,18 @@ for arg in "$@"; do
       echo "  --skip-build   Skip Docker build (use existing image)"
       echo "  --build-only   Build image only (no deploy)"
       echo "  --restart      Force rollout restart after deploy"
+      echo "  --force        Build with unique tag to bypass cache (recommended)"
       echo "  --help, -h     Show this help"
       exit 0 ;;
   esac
 done
+
+# If --force is used, generate unique tag
+if [ "$DO_FORCE" = true ]; then
+  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+  IMAGE_TAG="v${TIMESTAMP}"
+  log_info "Force mode: using unique tag ${IMAGE_TAG}"
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log_ok()   { printf "${GREEN}✔${NC}  %s\n" "$1"; }
@@ -109,9 +119,16 @@ if [ "$DO_DEPLOY" = true ]; then
   
   log_info "Deploying to namespace: ${NAMESPACE}"
   
-  # Apply deployment and service
-  kubectl apply -f infra/ods-service/deployment.yaml || log_fail "Failed to apply deployment"
+  # Apply service first (always)
   kubectl apply -f infra/ods-service/service.yaml || log_fail "Failed to apply service"
+  
+  # For force mode, update image directly; otherwise apply deployment manifest
+  if [ "$DO_FORCE" = true ]; then
+    log_info "Force mode: updating deployment image to ${IMAGE_NAME}:${IMAGE_TAG}..."
+    kubectl set image deployment/ods-service ods-service="${IMAGE_NAME}:${IMAGE_TAG}" -n "${NAMESPACE}" || log_fail "Failed to update image"
+  else
+    kubectl apply -f infra/ods-service/deployment.yaml || log_fail "Failed to apply deployment"
+  fi
   
   log_ok "Manifests applied"
   

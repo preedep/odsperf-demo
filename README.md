@@ -446,11 +446,13 @@ Script จะทำงานอัตโนมัติ:
 ```bash
 ./scripts/deploy-ods.sh --skip-build   # Deploy only (ใช้ image ที่มีอยู่)
 ./scripts/deploy-ods.sh --build-only   # Build only (ไม่ deploy)
-./scripts/deploy-ods.sh --restart      # Force rollout restart (pull new image)
+./scripts/deploy-ods.sh --restart      # Force rollout restart after deploy
+./scripts/deploy-ods.sh --force        # Build with unique tag (bypass cache) - แนะนำ!
 ```
 
 > ⏱ Build ครั้งแรกประมาณ 5–10 นาที (compile + download crates)
-> 💡 ใช้ `--restart` เมื่อต้องการ force pull image ใหม่ (เช่น หลัง rebuild)
+> 💡 **แนะนำ:** ใช้ `--force` เพื่อ build ด้วย unique tag (เช่น `v20260403-182307`) เพื่อหลีกเลี่ยงปัญหา image cache
+> 💡 รองรับทั้ง **Docker Desktop Kubernetes** และ **minikube** อัตโนมัติ
 
 ### 4.2 Deploy แบบ Manual (ทางเลือก)
 
