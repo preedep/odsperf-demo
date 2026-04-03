@@ -10,9 +10,10 @@ use std::str::FromStr;
 use std::time::Instant;
 
 const COLLECTION_NAME: &str = "final_statements";
+const SOURCE_COLLECTION: &str = "account_transaction";  // Source collection to read dates from
 const NUM_HOT_ACCOUNTS: usize = 10;
-const WRITES_PER_ACCOUNT: usize = 1000;
-const STATEMENTS_PER_WRITE: usize = 10;
+const WRITES_PER_DOCUMENT: usize = 100;  // Number of times we append to same document
+const STATEMENTS_PER_WRITE: usize = 10;  // Statements added per append
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,15 +21,20 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "mongodb://odsuser:odspassword@localhost:27017/odsperf".to_string());
     let mongodb_db = env::var("MONGODB_DB").unwrap_or_else(|_| "odsperf".to_string());
 
-    let collection = setup_collection(&mongodb_uri, &mongodb_db).await?;
+    let db = connect_to_mongodb(&mongodb_uri, &mongodb_db).await?;
+    let collection = setup_collection(&db).await?;
 
     let mut rng = thread_rng();
     let hot_accounts = generate_hot_accounts();
     
-    print_test_configuration();
-    initialize_account_documents(&collection, &hot_accounts, &mut rng).await?;
+    println!("📅 Reading distinct dates from {}...", SOURCE_COLLECTION);
+    let hot_dates = read_distinct_dates(&db).await?;
+    println!("✅ Found {} distinct dates\n", hot_dates.len());
+    
+    print_test_configuration(hot_dates.len());
+    initialize_account_documents(&collection, &hot_accounts, &hot_dates, &mut rng).await?;
 
-    let stats = run_hot_document_test(&collection, &hot_accounts, &mut rng).await?;
+    let stats = run_hot_document_test(&collection, &hot_accounts, &hot_dates, &mut rng).await?;
     
     print_test_results(&stats);
     print_document_analysis(&collection, &hot_accounts).await?;
@@ -43,21 +49,24 @@ async fn main() -> Result<()> {
 
 // ─── Setup & Initialization Functions ─────────────────────────────────────────
 
-async fn setup_collection(
+async fn connect_to_mongodb(
     mongodb_uri: &str,
     mongodb_db: &str,
-) -> Result<mongodb::Collection<bson::Document>> {
+) -> Result<mongodb::Database> {
     println!("🔌 Connecting to MongoDB...");
     let client_options = ClientOptions::parse(mongodb_uri).await?;
     let client = Client::with_options(client_options)?;
 
-    client
-        .database(mongodb_db)
-        .run_command(doc! { "ping": 1 })
-        .await?;
+    let db = client.database(mongodb_db);
+    db.run_command(doc! { "ping": 1 }).await?;
     println!("✅ Connected successfully\n");
 
-    let db = client.database(mongodb_db);
+    Ok(db)
+}
+
+async fn setup_collection(
+    db: &mongodb::Database,
+) -> Result<mongodb::Collection<bson::Document>> {
     let collection = db.collection::<bson::Document>(COLLECTION_NAME);
 
     println!("🗑️  Dropping existing collection (if any)...");
@@ -80,26 +89,81 @@ fn generate_hot_accounts() -> Vec<String> {
         .collect()
 }
 
-fn print_test_configuration() {
+async fn read_distinct_dates(db: &mongodb::Database) -> Result<Vec<NaiveDate>> {
+    let source_collection = db.collection::<bson::Document>(SOURCE_COLLECTION);
+    
+    // Check if source collection has data
+    let count = source_collection.count_documents(doc! {}).await?;
+    
+    if count == 0 {
+        println!("⚠️  Source collection is empty, generating dates for 2025 (365 days)...");
+        let start_date = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let dates: Vec<NaiveDate> = (0..365)
+            .map(|i| start_date + chrono::Duration::days(i))
+            .collect();
+        return Ok(dates);
+    }
+    
+    // Get distinct dtrans dates from source collection
+    let distinct_dates = source_collection
+        .distinct("dtrans", doc! {})
+        .await?;
+    
+    let mut dates: Vec<NaiveDate> = distinct_dates
+        .iter()
+        .filter_map(|bson_val| {
+            if let Bson::DateTime(dt) = bson_val {
+                let chrono_dt = dt.to_chrono();
+                Some(chrono_dt.date_naive())
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    dates.sort();
+    dates.dedup();
+    
+    if dates.is_empty() {
+        return Err(anyhow::anyhow!("No dates found in source collection"));
+    }
+    
+    Ok(dates)
+}
+
+fn print_test_configuration(num_dates: usize) {
+    let total_documents = NUM_HOT_ACCOUNTS * num_dates;
+    let total_writes = total_documents * WRITES_PER_DOCUMENT;
+    let total_statements = total_writes * STATEMENTS_PER_WRITE;
+    
     println!("📋 Test Configuration:");
-    println!("   • Collection: {}", COLLECTION_NAME);
+    println!("   • Source collection: {}", SOURCE_COLLECTION);
+    println!("   • Target collection: {}", COLLECTION_NAME);
     println!("   • Hot accounts: {}", NUM_HOT_ACCOUNTS);
-    println!("   • Writes per account: {}", WRITES_PER_ACCOUNT);
+    println!("   • Distinct dates (from source): {}", num_dates);
+    println!("   • Documents (account × date): {}", total_documents);
+    println!("   • Writes per document: {}", WRITES_PER_DOCUMENT);
     println!("   • Statements per write: {}", STATEMENTS_PER_WRITE);
-    println!("   • Total writes: {}", NUM_HOT_ACCOUNTS * WRITES_PER_ACCOUNT);
-    println!("   • Total statements: {}\n", NUM_HOT_ACCOUNTS * WRITES_PER_ACCOUNT * STATEMENTS_PER_WRITE);
+    println!("   • Total writes: {}", total_writes);
+    println!("   • Total statements: {}\n", total_statements);
 }
 
 async fn initialize_account_documents(
     collection: &mongodb::Collection<bson::Document>,
     hot_accounts: &[String],
+    hot_dates: &[NaiveDate],
     rng: &mut ThreadRng,
 ) -> Result<()> {
-    println!("🔧 Initializing {} account documents...", NUM_HOT_ACCOUNTS);
+    let total_docs = hot_accounts.len() * hot_dates.len();
+    println!("🔧 Initializing {} documents (account × date)...", total_docs);
+    
     for account_no in hot_accounts {
-        let account_doc = generate_account_master(account_no, rng);
-        collection.insert_one(account_doc).await?;
+        for date in hot_dates {
+            let doc = generate_account_date_document(account_no, *date, rng);
+            collection.insert_one(doc).await?;
+        }
     }
+    
     println!("✅ Initialization complete\n");
     Ok(())
 }
@@ -118,6 +182,7 @@ struct TestStatistics {
 async fn run_hot_document_test(
     collection: &mongodb::Collection<bson::Document>,
     hot_accounts: &[String],
+    hot_dates: &[NaiveDate],
     rng: &mut ThreadRng,
 ) -> Result<TestStatistics> {
     println!("╔════════════════════════════════════════════════════════════════════════╗");
@@ -131,20 +196,24 @@ async fn run_hot_document_test(
     let mut max_write_time = 0.0f64;
     let mut sum_write_time = 0.0f64;
 
-    for write_num in 0..WRITES_PER_ACCOUNT {
+    // Simulate batch writes: repeatedly append to same account+date documents
+    for write_num in 0..WRITES_PER_DOCUMENT {
         let batch_start = Instant::now();
 
+        // Write to all account+date combinations
         for account_no in hot_accounts {
-            let write_time = perform_single_write(collection, account_no, rng).await?;
-            
-            min_write_time = min_write_time.min(write_time);
-            max_write_time = max_write_time.max(write_time);
-            sum_write_time += write_time;
-            total_writes += 1;
-            total_statements_written += STATEMENTS_PER_WRITE;
+            for date in hot_dates {
+                let write_time = perform_single_write(collection, account_no, *date, rng).await?;
+                
+                min_write_time = min_write_time.min(write_time);
+                max_write_time = max_write_time.max(write_time);
+                sum_write_time += write_time;
+                total_writes += 1;
+                total_statements_written += STATEMENTS_PER_WRITE;
+            }
         }
 
-        if (write_num + 1) % 100 == 0 || write_num == 0 {
+        if (write_num + 1) % 10 == 0 || write_num == 0 {
             print_progress(
                 write_num + 1,
                 total_writes,
@@ -168,54 +237,34 @@ async fn run_hot_document_test(
 async fn perform_single_write(
     collection: &mongodb::Collection<bson::Document>,
     account_no: &str,
+    date: NaiveDate,
     rng: &mut ThreadRng,
 ) -> Result<f64> {
     let write_start = Instant::now();
 
+    // Generate statements for this specific date
     let statements: Vec<Bson> = (0..STATEMENTS_PER_WRITE)
-        .map(|_| Bson::Document(generate_transaction(account_no, rng)))
+        .map(|_| Bson::Document(generate_transaction(account_no, date, rng)))
         .collect();
 
-    let max_dtrans = extract_max_dtrans(&statements);
-    let update_doc = build_update_document(statements, max_dtrans);
+    let update_doc = doc! {
+        "$push": { "statements": { "$each": statements } }
+    };
 
+    // Update document with compound key: account + date
     collection
-        .update_one(doc! { "iacct": account_no }, update_doc)
+        .update_one(
+            doc! { 
+                "iacct": account_no,
+                "dtrans": naive_date_to_bson(date)
+            },
+            update_doc
+        )
         .await?;
 
     Ok(write_start.elapsed().as_secs_f64() * 1000.0)
 }
 
-fn extract_max_dtrans(statements: &[Bson]) -> Option<BsonDateTime> {
-    statements
-        .iter()
-        .filter_map(|s| {
-            if let Bson::Document(doc) = s {
-                doc.get("dtrans").and_then(|d| {
-                    if let Bson::DateTime(dt) = d {
-                        Some(*dt)
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        })
-        .max()
-}
-
-fn build_update_document(statements: Vec<Bson>, max_dtrans: Option<BsonDateTime>) -> bson::Document {
-    let mut update_doc = doc! {
-        "$push": { "statements": { "$each": statements } }
-    };
-    
-    if let Some(max_dt) = max_dtrans {
-        update_doc.insert("$max", doc! { "dtrans": max_dt });
-    }
-    
-    update_doc
-}
 
 // ─── Reporting Functions ──────────────────────────────────────────────────────
 
@@ -232,7 +281,7 @@ fn print_progress(
     println!(
         "✓ Iteration {:>4}/{} | Writes: {:>6} | Batch: {:>6.2}ms | Total: {:>7.2}s | {:>7.0} writes/s | {:>8.0} stmt/s",
         iteration,
-        WRITES_PER_ACCOUNT,
+        WRITES_PER_DOCUMENT,
         total_writes,
         batch_elapsed.as_millis(),
         overall_elapsed.as_secs_f64(),
@@ -268,23 +317,131 @@ async fn print_document_analysis(
     collection: &mongodb::Collection<bson::Document>,
     hot_accounts: &[String],
 ) -> Result<()> {
-    println!("📄 Document Analysis:");
+    println!("📄 Hot Document Analysis:");
+    println!("   Analyzing document growth per account (showing sample dates)...\n");
+    
     for (idx, account_no) in hot_accounts.iter().enumerate() {
-        if let Some(doc) = collection.find_one(doc! { "iacct": account_no }).await? {
-            let stmt_count = doc.get_array("statements").map(|arr| arr.len()).unwrap_or(0);
-            let doc_size = bson::to_vec(&doc)?.len();
-            
-            println!(
-                "   • Account {} ({:>2}/{}): {:>6} statements, {:>8} bytes",
-                account_no,
-                idx + 1,
-                NUM_HOT_ACCOUNTS,
-                stmt_count,
-                doc_size
-            );
+        let stats = analyze_account_documents(collection, account_no).await?;
+        print_account_statistics(account_no, idx + 1, &stats);
+    }
+    
+    let overall_stats = calculate_overall_statistics(collection).await?;
+    print_overall_summary(&overall_stats);
+    
+    Ok(())
+}
+
+struct AccountStatistics {
+    doc_count: usize,
+    total_statements: usize,
+    total_size: usize,
+    min_stmts: usize,
+    max_stmts: usize,
+    sample_docs: Vec<(String, usize, usize)>,
+}
+
+async fn analyze_account_documents(
+    collection: &mongodb::Collection<bson::Document>,
+    account_no: &str,
+) -> Result<AccountStatistics> {
+    let mut cursor = collection.find(doc! { "iacct": account_no }).await?;
+    
+    let mut total_statements = 0;
+    let mut total_size = 0;
+    let mut doc_count = 0;
+    let mut min_stmts = usize::MAX;
+    let mut max_stmts = 0;
+    let mut sample_docs = Vec::new();
+    
+    while cursor.advance().await? {
+        let doc = cursor.deserialize_current()?;
+        let stmt_count = doc.get_array("statements").map(|arr| arr.len()).unwrap_or(0);
+        let doc_size = bson::to_vec(&doc)?.len();
+        
+        total_statements += stmt_count;
+        total_size += doc_size;
+        doc_count += 1;
+        min_stmts = min_stmts.min(stmt_count);
+        max_stmts = max_stmts.max(stmt_count);
+        
+        if sample_docs.len() < 3 {
+            if let Some(dtrans) = doc.get_datetime("dtrans").ok() {
+                sample_docs.push((dtrans.to_string(), stmt_count, doc_size));
+            }
         }
     }
-    Ok(())
+    
+    Ok(AccountStatistics {
+        doc_count,
+        total_statements,
+        total_size,
+        min_stmts: if min_stmts == usize::MAX { 0 } else { min_stmts },
+        max_stmts,
+        sample_docs,
+    })
+}
+
+fn print_account_statistics(account_no: &str, index: usize, stats: &AccountStatistics) {
+    println!("   🔥 Account {} ({}/{})", account_no, index, NUM_HOT_ACCOUNTS);
+    println!("      • Documents (hot dates):     {:>6}", stats.doc_count);
+    println!("      • Total statements:          {:>6}", stats.total_statements);
+    println!("      • Total size:                {:>6} KB", stats.total_size / 1024);
+    println!(
+        "      • Avg statements/document:   {:>6}",
+        if stats.doc_count > 0 { stats.total_statements / stats.doc_count } else { 0 }
+    );
+    println!(
+        "      • Avg size/document:         {:>6} KB",
+        if stats.doc_count > 0 { stats.total_size / stats.doc_count / 1024 } else { 0 }
+    );
+    println!("      • Min/Max statements:        {:>6} / {}", stats.min_stmts, stats.max_stmts);
+    
+    if !stats.sample_docs.is_empty() {
+        println!("      • Sample documents:");
+        for (date, stmts, size) in &stats.sample_docs {
+            println!("        - {}: {} stmts, {} KB", &date[..10], stmts, size / 1024);
+        }
+    }
+    println!();
+}
+
+struct OverallStatistics {
+    total_docs: u64,
+    total_statements: usize,
+}
+
+async fn calculate_overall_statistics(
+    collection: &mongodb::Collection<bson::Document>,
+) -> Result<OverallStatistics> {
+    let total_docs = collection.count_documents(doc! {}).await?;
+    
+    let pipeline = vec![
+        doc! { "$project": { "stmt_count": { "$size": "$statements" } } },
+        doc! { "$group": { "_id": null, "total": { "$sum": "$stmt_count" } } }
+    ];
+    
+    let mut cursor = collection.aggregate(pipeline).await?;
+    let mut total_statements = 0;
+    
+    if cursor.advance().await? {
+        let result = cursor.deserialize_current()?;
+        total_statements = result.get_i32("total").unwrap_or(0) as usize;
+    }
+    
+    Ok(OverallStatistics {
+        total_docs,
+        total_statements,
+    })
+}
+
+fn print_overall_summary(stats: &OverallStatistics) {
+    println!("   📊 Overall Summary:");
+    println!("      • Total documents:           {:>6}", stats.total_docs);
+    println!("      • Total statements:          {:>6}", stats.total_statements);
+    println!(
+        "      • Avg statements/document:   {:>6}",
+        if stats.total_docs > 0 { stats.total_statements / stats.total_docs as usize } else { 0 }
+    );
 }
 
 // ─── Helper: NaiveDate → bson::DateTime (UTC midnight) ───────────────────────
@@ -298,10 +455,14 @@ fn decimal_to_bson(d: Decimal) -> Decimal128 {
     Decimal128::from_str(&format!("{:.2}", d)).expect("valid decimal string")
 }
 
-// ─── Generate Account Master Document ─────────────────────────────────────────
-fn generate_account_master(account_no: &str, rng: &mut ThreadRng) -> bson::Document {
+// ─── Generate Account+Date Document ───────────────────────────────────────────
+fn generate_account_date_document(
+    account_no: &str,
+    date: NaiveDate,
+    rng: &mut ThreadRng,
+) -> bson::Document {
     let dopen = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
-        + chrono::Duration::days(rng.gen_range(0..=1825)); // 5 years range
+        + chrono::Duration::days(rng.gen_range(0..=1825));
 
     let statuses = ["ACTIVE", "DORMANT", "CLOSED"];
     let cstatus = statuses[rng.gen_range(0..statuses.len())];
@@ -312,11 +473,9 @@ fn generate_account_master(account_no: &str, rng: &mut ThreadRng) -> bson::Docum
     let segments = ["RETAIL", "SME", "CORPORATE", "PREMIUM"];
     let segment = segments[rng.gen_range(0..segments.len())];
 
-    // Initialize with a base date that will be updated on first write
-    let initial_dtrans = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-    
     doc! {
         "iacct": account_no,
+        "dtrans": naive_date_to_bson(date),  // Transaction date - part of compound key
         "custid": format!("{:010}", rng.gen_range(1000000000u64..9999999999u64)),
         "ctype": ctype,
         "dopen": naive_date_to_bson(dopen),
@@ -325,20 +484,16 @@ fn generate_account_master(account_no: &str, rng: &mut ThreadRng) -> bson::Docum
         "cbranch": format!("{:04}", rng.gen_range(1u32..9999u32)),
         "segment": segment,
         "credit_limit": Bson::Decimal128(decimal_to_bson(Decimal::new(rng.gen_range(10000i64..1000000i64), 2))),
-        "dtrans": naive_date_to_bson(initial_dtrans),  // Latest transaction date for querying
-        "statements": Bson::Array(vec![]),
+        "statements": Bson::Array(vec![]),  // Will be populated with transactions for this date
     }
 }
 
 // ─── Generate Transaction Document ────────────────────────────────────────────
-fn generate_transaction(account_no: &str, rng: &mut ThreadRng) -> bson::Document {
-    let start_date = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-    let end_date = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
-    let days_in_range = (end_date - start_date).num_days();
-
-    let dtrans = start_date + chrono::Duration::days(rng.gen_range(0..=days_in_range));
-    let drun = dtrans + chrono::Duration::days(rng.gen_range(0..=3));
-    let ddate = dtrans;
+fn generate_transaction(account_no: &str, date: NaiveDate, rng: &mut ThreadRng) -> bson::Document {
+    // All transactions in this document happen on the same date
+    let dtrans = date;
+    let drun = date + chrono::Duration::days(rng.gen_range(0..=3));
+    let ddate = date;
 
     let cseq = rng.gen_range(1i32..=9999i32);
 
