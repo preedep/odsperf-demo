@@ -38,7 +38,7 @@ async fn load_account_masters(collection: &Collection<Document>) -> Result<HashM
     Ok(account_masters)
 }
 
-/// Build aggregation pipeline for grouping transactions by account
+/// Build aggregation pipeline for grouping transactions by account AND dtrans
 fn build_aggregation_pipeline() -> Vec<Document> {
     vec![
         doc! {
@@ -50,7 +50,10 @@ fn build_aggregation_pipeline() -> Vec<Document> {
         },
         doc! {
             "$group": {
-                "_id": "$iacct",
+                "_id": {
+                    "iacct": "$iacct",
+                    "dtrans": "$dtrans"
+                },
                 "statements": {
                     "$push": {
                         "drun": "$drun",
@@ -69,8 +72,7 @@ fn build_aggregation_pipeline() -> Vec<Document> {
                         "description": "$description",
                         "time_hms": "$time_hms"
                     }
-                },
-                "maxDtrans": { "$max": "$dtrans" }
+                }
             }
         }
     ]
@@ -79,14 +81,16 @@ fn build_aggregation_pipeline() -> Vec<Document> {
 /// Merge account master data with aggregated statements
 fn merge_account_with_statements(
     account_master: &Document,
+    iacct: &str,
+    dtrans: &bson::Bson,
     statements: &bson::Array,
-    max_dtrans: Option<&bson::Bson>,
 ) -> Document {
     let mut final_doc = account_master.clone();
+    // Remove _id to let MongoDB generate new ones
+    final_doc.remove("_id");
+    final_doc.insert("iacct", iacct);
+    final_doc.insert("dtrans", dtrans.clone());
     final_doc.insert("statements", statements.clone());
-    if let Some(dtrans) = max_dtrans {
-        final_doc.insert("dtrans", dtrans.clone());
-    }
     final_doc
 }
 
@@ -107,13 +111,16 @@ async fn aggregate_and_merge(
     let mut skipped = 0;
 
     while let Some(result) = cursor.try_next().await? {
-        let iacct = result.get_str("_id")?;
+        // Parse _id as document with iacct and dtrans
+        let id_doc = result.get_document("_id")?;
+        let iacct = id_doc.get_str("iacct")?;
+        let dtrans = id_doc.get("dtrans")
+            .ok_or_else(|| anyhow::anyhow!("Missing dtrans in _id"))?;
         
         if let Some(account_master) = account_masters.get(iacct) {
             let statements = result.get_array("statements")?;
-            let max_dtrans = result.get("maxDtrans");
             
-            let final_doc = merge_account_with_statements(account_master, statements, max_dtrans);
+            let final_doc = merge_account_with_statements(account_master, iacct, dtrans, statements);
             documents_to_insert.push(final_doc);
             processed += 1;
             

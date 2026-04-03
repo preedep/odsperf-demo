@@ -22,6 +22,103 @@ use crate::{
 
 const COLLECTION: &str = "final_statements";
 
+/// Parse account master data from a BSON document
+fn parse_account_master(doc: &bson::Document) -> Result<AccountMasterDto, AppError> {
+    let iacct = doc.get_str("iacct")
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse iacct: {}", e)))?;
+    
+    Ok(AccountMasterDto {
+        iacct:        iacct.to_string(),
+        custid:       doc.get_str("custid")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse custid: {}", e)))?
+            .to_string(),
+        ctype:        doc.get_str("ctype")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse ctype: {}", e)))?
+            .to_string(),
+        dopen:        doc.get_datetime("dopen")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse dopen: {}", e)))?
+            .to_chrono().format("%Y-%m-%d").to_string(),
+        dclose:       doc.get_datetime("dclose").ok().map(|d| d.to_chrono().format("%Y-%m-%d").to_string()),
+        cstatus:      doc.get_str("cstatus")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse cstatus: {}", e)))?
+            .to_string(),
+        cbranch:      doc.get_str("cbranch")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse cbranch: {}", e)))?
+            .to_string(),
+        segment:      doc.get_str("segment")
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse segment: {}", e)))?
+            .to_string(),
+        credit_limit: doc.get("credit_limit").and_then(|v| {
+            if let bson::Bson::Decimal128(d) = v {
+                Some(d.to_string())
+            } else {
+                None
+            }
+        }),
+    })
+}
+
+/// Parse a single statement from BSON document
+fn parse_statement(stmt_doc: &bson::Document, account_no: &str) -> Option<TransactionDto> {
+    let fmt_bson = |d: bson::DateTime| -> String {
+        d.to_chrono().format("%Y-%m-%d").to_string()
+    };
+    
+    let drun = stmt_doc.get_datetime("drun").ok().map(|d| fmt_bson(*d))?;
+    let cseq = stmt_doc.get_i32("cseq").ok()?;
+    let ddate = stmt_doc.get_datetime("ddate").ok().map(|d| fmt_bson(*d))?;
+    
+    Some(TransactionDto {
+        iacct:       account_no.to_string(),
+        drun,
+        cseq,
+        dtrans:      stmt_doc.get_datetime("dtrans").ok().map(|d| fmt_bson(*d)),
+        ddate,
+        ttime:       stmt_doc.get_str("ttime").ok().map(|s| s.to_string()),
+        cmnemo:      stmt_doc.get_str("cmnemo").ok().map(|s| s.to_string()),
+        cchannel:    stmt_doc.get_str("cchannel").ok().map(|s| s.to_string()),
+        ctr:         stmt_doc.get_str("ctr").ok().map(|s| s.to_string()),
+        cbr:         stmt_doc.get_str("cbr").ok().map(|s| s.to_string()),
+        cterm:       stmt_doc.get_str("cterm").ok().map(|s| s.to_string()),
+        camt:        stmt_doc.get_str("camt").ok().map(|s| s.to_string()),
+        aamount:     stmt_doc.get("aamount").and_then(|v| {
+            if let bson::Bson::Decimal128(d) = v {
+                Some(d.to_string())
+            } else {
+                None
+            }
+        }),
+        abal:        stmt_doc.get("abal").and_then(|v| {
+            if let bson::Bson::Decimal128(d) = v {
+                Some(d.to_string())
+            } else {
+                None
+            }
+        }),
+        description: stmt_doc.get_str("description").ok().map(|s| s.to_string()),
+        time_hms:    stmt_doc.get_str("time_hms").ok().map(|s| s.to_string()),
+    })
+}
+
+/// Parse statements array from a document
+fn parse_statements_from_doc(doc: &bson::Document) -> Vec<TransactionDto> {
+    let mut statements = Vec::new();
+    
+    if let Ok(statements_array) = doc.get_array("statements") {
+        let account_no = doc.get_str("iacct").unwrap_or("");
+        
+        for stmt_bson in statements_array {
+            if let bson::Bson::Document(stmt_doc) = stmt_bson {
+                if let Some(stmt) = parse_statement(stmt_doc, account_no) {
+                    statements.push(stmt);
+                }
+            }
+        }
+    }
+    
+    statements
+}
+
 /// POST /v1/query-mongo-nojoin
 ///
 /// Query `final_statements` collection in MongoDB for a given account.
@@ -66,151 +163,54 @@ pub async fn handle(
 
     let timer = Instant::now();
 
-    // ── Query with Aggregation Pipeline ─────────────────────────────────
-    // Use aggregation to filter statements at database level
-    // This provides fair comparison with PostgreSQL JOIN query
+    // ── Query with dtrans range filter ──────────────────────────────────
+    // Query documents by account AND dtrans range
+    // Each document = 1 account + 1 dtrans + statements for that day
     let collection = state
         .mongo
         .collection::<bson::Document>(COLLECTION);
 
-    let pipeline = vec![
-        // Match account
-        doc! {
-            "$match": {
-                "iacct": &body.account_no
-            }
-        },
-        // Filter statements by dtrans range
-        doc! {
-            "$project": {
-                "iacct": 1,
-                "custid": 1,
-                "ctype": 1,
-                "dopen": 1,
-                "dclose": 1,
-                "cstatus": 1,
-                "cbranch": 1,
-                "segment": 1,
-                "credit_limit": 1,
-                "dtrans": 1,
-                "statements": {
-                    "$filter": {
-                        "input": "$statements",
-                        "as": "stmt",
-                        "cond": {
-                            "$and": [
-                                { "$gte": ["$$stmt.dtrans", bson_start] },
-                                { "$lte": ["$$stmt.dtrans", bson_end] }
-                            ]
-                        }
-                    }
-                }
-            }
+    let filter = doc! {
+        "iacct": &body.account_no,
+        "dtrans": {
+            "$gte": bson_start,
+            "$lte": bson_end
         }
-    ];
+    };
 
-    let mut cursor = collection.aggregate(pipeline).await
+    let mut cursor = collection.find(filter).await
         .map_err(|e| {
             metrics::counter!("db_errors_total",
                 "database" => "mongodb",
-                "operation" => "aggregate"
+                "operation" => "find"
             ).increment(1);
             e
         })?;
 
-    let doc = cursor.try_next().await
-        .map_err(|e| {
-            metrics::counter!("db_errors_total",
-                "database" => "mongodb",
-                "operation" => "aggregate"
-            ).increment(1);
-            e
-        })?
-        .ok_or_else(|| AppError::NotFound(format!("Account {} not found", body.account_no)))?;
-
-    // Parse account info
-    let account_no = doc.get_str("iacct")
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse iacct: {}", e)))?
-        .to_string();
+    // Collect all matching documents
+    let mut all_statements = Vec::new();
+    let mut account_dto: Option<AccountMasterDto> = None;
     
-    let account_dto = AccountMasterDto {
-        iacct:        account_no.clone(),
-        custid:       doc.get_str("custid")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse custid: {}", e)))?
-            .to_string(),
-        ctype:        doc.get_str("ctype")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse ctype: {}", e)))?
-            .to_string(),
-        dopen:        doc.get_datetime("dopen")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse dopen: {}", e)))?
-            .to_chrono().format("%Y-%m-%d").to_string(),
-        dclose:       doc.get_datetime("dclose").ok().map(|d| d.to_chrono().format("%Y-%m-%d").to_string()),
-        cstatus:      doc.get_str("cstatus")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse cstatus: {}", e)))?
-            .to_string(),
-        cbranch:      doc.get_str("cbranch")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse cbranch: {}", e)))?
-            .to_string(),
-        segment:      doc.get_str("segment")
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse segment: {}", e)))?
-            .to_string(),
-        credit_limit: doc.get("credit_limit").and_then(|v| {
-            if let bson::Bson::Decimal128(d) = v {
-                Some(d.to_string())
-            } else {
-                None
-            }
-        }),
-    };
-
-    // Parse filtered statements
-    let statements_array = doc.get_array("statements")
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse statements: {}", e)))?;
-    let filtered_statements: Vec<TransactionDto> = statements_array
-        .iter()
-        .filter_map(|stmt_bson| {
-            if let bson::Bson::Document(stmt_doc) = stmt_bson {
-                let fmt_bson = |d: bson::DateTime| -> String {
-                    d.to_chrono().format("%Y-%m-%d").to_string()
-                };
-                
-                Some(TransactionDto {
-                    iacct:       account_no.clone(),
-                    drun:        stmt_doc.get_datetime("drun").ok().map(|d| fmt_bson(*d))?,
-                    cseq:        stmt_doc.get_i32("cseq").ok()?,
-                    dtrans:      stmt_doc.get_datetime("dtrans").ok().map(|d| fmt_bson(*d)),
-                    ddate:       stmt_doc.get_datetime("ddate").ok().map(|d| fmt_bson(*d))?,
-                    ttime:       stmt_doc.get_str("ttime").ok().map(|s| s.to_string()),
-                    cmnemo:      stmt_doc.get_str("cmnemo").ok().map(|s| s.to_string()),
-                    cchannel:    stmt_doc.get_str("cchannel").ok().map(|s| s.to_string()),
-                    ctr:         stmt_doc.get_str("ctr").ok().map(|s| s.to_string()),
-                    cbr:         stmt_doc.get_str("cbr").ok().map(|s| s.to_string()),
-                    cterm:       stmt_doc.get_str("cterm").ok().map(|s| s.to_string()),
-                    camt:        stmt_doc.get_str("camt").ok().map(|s| s.to_string()),
-                    aamount:     stmt_doc.get("aamount").and_then(|v| {
-                        if let bson::Bson::Decimal128(d) = v {
-                            Some(d.to_string())
-                        } else {
-                            None
-                        }
-                    }),
-                    abal:        stmt_doc.get("abal").and_then(|v| {
-                        if let bson::Bson::Decimal128(d) = v {
-                            Some(d.to_string())
-                        } else {
-                            None
-                        }
-                    }),
-                    description: stmt_doc.get_str("description").ok().map(|s| s.to_string()),
-                    time_hms:    stmt_doc.get_str("time_hms").ok().map(|s| s.to_string()),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let total = filtered_statements.len();
+    while let Some(doc) = cursor.try_next().await.map_err(|e| {
+        metrics::counter!("db_errors_total",
+            "database" => "mongodb",
+            "operation" => "cursor"
+        ).increment(1);
+        e
+    })? {
+        // Parse account info from first document
+        if account_dto.is_none() {
+            account_dto = Some(parse_account_master(&doc)?);
+        }
+        
+        // Parse and collect statements from this document
+        all_statements.extend(parse_statements_from_doc(&doc));
+    }
+    
+    let account_dto = account_dto
+        .ok_or_else(|| AppError::NotFound(format!("Account {} not found", body.account_no)))?;
+    
+    let total = all_statements.len();
     let elapsed = timer.elapsed();
     let elapsed_ms = elapsed.as_millis();
 
@@ -228,9 +228,9 @@ pub async fn handle(
 
     info!(
         request_id = %request_id,
-        total      = total,
-        elapsed_ms = elapsed_ms,
-        "MongoDB no-join query complete"
+        total,
+        elapsed_ms,
+        "MongoDB no-join query completed"
     );
 
     Ok(Json(QueryMongoNoJoinResponse {
@@ -244,7 +244,7 @@ pub async fn handle(
         total,
         elapsed_ms,
         account:    account_dto,
-        statements: filtered_statements,
+        statements: all_statements,
     }))
 }
 
