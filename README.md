@@ -75,10 +75,12 @@ odsperf-demo/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
-│   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
+│   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service (รองรับ --force)
 │   ├── test-api.sh                     # Shell script ทดสอบ API + Comparison summary
 │   ├── test-hot-document.sh            # ทดสอบ hot document write performance (MongoDB)
-│   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
+│   ├── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
+│   ├── check-metrics.sh                # ตรวจสอบ Prometheus metrics จาก ODS Service
+│   └── update-dashboard-configmap.sh   # อัปเดต Grafana dashboard ConfigMap
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
 │   ├── istio/
@@ -105,17 +107,18 @@ odsperf-demo/
 │   ├── main.rs                         # Entry point: init logging, DB, metrics, server
 │   ├── config.rs                       # Config จาก environment variables
 │   ├── error.rs                        # AppError → HTTP response (thiserror)
-│   ├── state.rs                        # AppState: PgPool + MongoDB Database
+│   ├── state.rs                        # AppState: PgPool + MongoDB Database + pool metrics
 │   ├── models.rs                       # Request / Response / DTO structs
+│   ├── metrics_collector.rs            # System metrics collector (CPU, Memory)
 │   ├── db/
 │   │   ├── postgres.rs                 # PgPoolOptions::connect()
 │   │   └── mongodb.rs                  # Client::with_uri_str() + ping
 │   ├── handlers/
-│   │   ├── mod.rs                      # Router + middleware (metrics, tracing)
+│   │   ├── mod.rs                      # Router + middleware (HTTP metrics, tracing)
 │   │   ├── health.rs                   # GET  /health
-│   │   ├── pg.rs                       # POST /v1/query-pg
+│   │   ├── pg.rs                       # POST /v1/query-pg (with DB metrics)
 │   │   ├── pg_join.rs                  # POST /v1/query-pg-join
-│   │   └── mongo.rs                    # POST /v1/query-mongo
+│   │   └── mongo.rs                    # POST /v1/query-mongo (with DB metrics)
 │   └── bin/
 │       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
 │       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
@@ -511,12 +514,30 @@ curl http://localhost:8080/metrics
 ```
 
 **Metrics ที่ expose:**
+
+**HTTP Metrics:**
 - `http_requests_total{method, path, status}` — Request counter
 - `http_request_duration_seconds{method, path}` — Latency histogram (p50, p95, p99)
 
+**System Metrics:**
+- `process_resident_memory_bytes` — Process memory usage
+- `process_cpu_usage_percent` — CPU usage percentage
+- `node_memory_MemTotal_bytes` — Total system memory
+- `node_memory_MemUsed_bytes` — Used system memory
+- `node_memory_MemAvailable_bytes` — Available system memory
+
+**Database Metrics:**
+- `db_pool_connections_total{database}` — Total connections in pool
+- `db_pool_connections_active{database}` — Active connections
+- `db_pool_connections_idle{database}` — Idle connections
+- `db_queries_total{database, operation}` — Query counter
+- `db_errors_total{database, operation}` — Error counter
+- `db_query_duration_seconds{database, operation}` — Query duration histogram
+
 **เข้าถึง Dashboard:**
 - Grafana → Dashboards → ODS folder → **"ODS Service Performance"**
-- ดูรายละเอียดเพิ่มเติม: [docs/grafana-dashboard.md](docs/grafana-dashboard.md)
+- Dashboard แสดง 15 panels: HTTP metrics, System metrics, Database metrics
+- ดูรายละเอียดเพิ่มเติม: [docs/adding-metrics.md](docs/adding-metrics.md)
 
 ### Environment Variables
 
@@ -555,6 +576,32 @@ kubectl port-forward svc/ods-service 8080:80 -n ods-service &
 
 # ดู response เต็ม
 ./scripts/test-api.sh --verbose
+```
+
+### ตรวจสอบ Metrics
+
+```bash
+./scripts/check-metrics.sh
+```
+
+Script จะแสดง metrics ทั้งหมดที่ ODS Service expose:
+- **System Metrics:** Process memory, CPU usage, Node memory
+- **Database Pool Metrics:** Total, Active, Idle connections
+- **Database Query Metrics:** Query counters, Error counters
+- **Database Duration Metrics:** Query duration histogram
+- **HTTP Metrics:** Request counters, Duration histogram
+
+**ตัวอย่าง output:**
+```
+📊 Checking ODS Service metrics...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 System Metrics (Gauge):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+process_resident_memory_bytes 6651904
+process_cpu_usage_percent 0
+node_memory_MemTotal_bytes 12528861184
+...
 ```
 
 ### เปรียบเทียบ Disk Usage
