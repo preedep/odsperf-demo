@@ -69,10 +69,31 @@ pub async fn handle(
     .bind(start)
     .bind(end)
     .fetch_all(&state.pg)
-    .await?;
+    .await
+    .map_err(|e| {
+        // Counter: database errors
+        metrics::counter!("db_errors_total", 
+            "database" => "postgresql",
+            "operation" => "select"
+        ).increment(1);
+        e
+    })?;
 
-    let elapsed_ms = timer.elapsed().as_millis();
-    let total      = rows.len();
+    let elapsed = timer.elapsed();
+    let elapsed_ms = elapsed.as_millis();
+    let total = rows.len();
+    
+    // Histogram: query duration
+    metrics::histogram!("db_query_duration_seconds",
+        "database" => "postgresql",
+        "operation" => "select"
+    ).record(elapsed.as_secs_f64());
+    
+    // Counter: successful queries
+    metrics::counter!("db_queries_total",
+        "database" => "postgresql",
+        "operation" => "select"
+    ).increment(1);
 
     info!(
         request_id = %request_id,

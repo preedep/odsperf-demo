@@ -101,7 +101,7 @@ struct HotDocument {
 async fn find_top_hot_documents(
     source_collection: &mongodb::Collection<bson::Document>,
 ) -> Result<Vec<HotDocument>> {
-    // Aggregate to find top account+date combinations by transaction count
+    // Aggregate to count transactions for all account+date combinations
     let pipeline = vec![
         doc! {
             "$group": {
@@ -119,14 +119,11 @@ async fn find_top_hot_documents(
         },
         doc! {
             "$sort": { "count": -1 }
-        },
-        doc! {
-            "$limit": TOP_HOT_DOCUMENTS as i64
         }
     ];
     
     let mut cursor = source_collection.aggregate(pipeline).await?;
-    let mut hot_docs = Vec::new();
+    let mut all_docs = Vec::new();
     
     while cursor.advance().await? {
         let doc = cursor.deserialize_current()?;
@@ -137,7 +134,7 @@ async fn find_top_hot_documents(
                 id_doc.get_str("date").ok()
             ) {
                 if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    hot_docs.push(HotDocument {
+                    all_docs.push(HotDocument {
                         account: account.to_string(),
                         date,
                         transaction_count: count,
@@ -147,7 +144,10 @@ async fn find_top_hot_documents(
         }
     }
     
-    Ok(hot_docs)
+    // Select top N based on count (already sorted by pipeline)
+    all_docs.truncate(TOP_HOT_DOCUMENTS);
+    
+    Ok(all_docs)
 }
 
 fn print_test_configuration(all_docs: &[(String, NaiveDate)], hot_documents: &[HotDocument]) {
@@ -219,33 +219,52 @@ async fn initialize_all_documents(
     account_dates: &[(String, NaiveDate)],
 ) -> Result<()> {
     let mut rng = thread_rng();
+    let batch_size = 1000;
+    let total = account_dates.len();
     
-    for (account, date) in account_dates {
-        // Read actual transactions for this account+date
-        let date_start = naive_date_to_bson(*date);
-        let date_end = naive_date_to_bson(*date + chrono::Duration::days(1));
+    println!("   Processing in batches of {}...", batch_size);
+    
+    for (batch_num, chunk) in account_dates.chunks(batch_size).enumerate() {
+        let mut batch_docs = Vec::new();
         
-        let mut cursor = source_collection
-            .find(doc! {
-                "iacct": account,
-                "dtrans": {
-                    "$gte": date_start,
-                    "$lt": date_end
-                }
-            })
-            .await?;
-        
-        let mut statements = Vec::new();
-        while cursor.advance().await? {
-            let doc = cursor.deserialize_current()?;
-            statements.push(Bson::Document(doc));
+        for (account, date) in chunk {
+            // Read actual transactions for this account+date
+            let date_start = naive_date_to_bson(*date);
+            let date_end = naive_date_to_bson(*date + chrono::Duration::days(1));
+            
+            let mut cursor = source_collection
+                .find(doc! {
+                    "iacct": account,
+                    "dtrans": {
+                        "$gte": date_start,
+                        "$lt": date_end
+                    }
+                })
+                .await?;
+            
+            let mut statements = Vec::new();
+            while cursor.advance().await? {
+                let doc = cursor.deserialize_current()?;
+                statements.push(Bson::Document(doc));
+            }
+            
+            // Create document with initial statements
+            let mut doc = generate_account_date_document(account, *date, &mut rng);
+            doc.insert("statements", Bson::Array(statements));
+            
+            batch_docs.push(doc);
         }
         
-        // Create document with initial statements
-        let mut doc = generate_account_date_document(account, *date, &mut rng);
-        doc.insert("statements", Bson::Array(statements));
+        // Bulk insert batch
+        if !batch_docs.is_empty() {
+            collection.insert_many(batch_docs).await?;
+        }
         
-        collection.insert_one(doc).await?;
+        let processed = ((batch_num + 1) * batch_size).min(total);
+        if (batch_num + 1) % 10 == 0 || processed == total {
+            println!("   Progress: {}/{} documents ({:.1}%)", 
+                processed, total, (processed as f64 / total as f64) * 100.0);
+        }
     }
     
     Ok(())

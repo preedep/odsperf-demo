@@ -28,17 +28,20 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # ── Flags ─────────────────────────────────────────────────────────────────────
 DO_BUILD=true
 DO_DEPLOY=true
+DO_RESTART=false
 
 for arg in "$@"; do
   case "$arg" in
     --skip-build)  DO_BUILD=false  ;;
     --build-only)  DO_DEPLOY=false ;;
+    --restart)     DO_RESTART=true ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
       echo "  --skip-build   Skip Docker build (use existing image)"
       echo "  --build-only   Build image only (no deploy)"
+      echo "  --restart      Force rollout restart after deploy"
       echo "  --help, -h     Show this help"
       exit 0 ;;
   esac
@@ -119,6 +122,20 @@ if [ "$DO_DEPLOY" = true ]; then
   else
     log_fail "Deployment failed to become ready. Check logs with:
     kubectl logs -n ${NAMESPACE} -l app=ods-service"
+  fi
+  
+  # Rollout restart if requested (forces new image pull)
+  if [ "$DO_RESTART" = true ]; then
+    log_step "Step 3 — Rollout Restart"
+    log_info "Forcing rollout restart to pull new image..."
+    kubectl rollout restart deployment/ods-service -n "$NAMESPACE" || log_fail "Rollout restart failed"
+    
+    log_info "Waiting for rollout to complete..."
+    if kubectl rollout status deployment/ods-service -n "$NAMESPACE" --timeout=120s 2>/dev/null; then
+      log_ok "Rollout complete"
+    else
+      log_fail "Rollout failed"
+    fi
   fi
   
   # Show pod status

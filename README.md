@@ -446,9 +446,11 @@ Script จะทำงานอัตโนมัติ:
 ```bash
 ./scripts/deploy-ods.sh --skip-build   # Deploy only (ใช้ image ที่มีอยู่)
 ./scripts/deploy-ods.sh --build-only   # Build only (ไม่ deploy)
+./scripts/deploy-ods.sh --restart      # Force rollout restart (pull new image)
 ```
 
 > ⏱ Build ครั้งแรกประมาณ 5–10 นาที (compile + download crates)
+> 💡 ใช้ `--restart` เมื่อต้องการ force pull image ใหม่ (เช่น หลัง rebuild)
 
 ### 4.2 Deploy แบบ Manual (ทางเลือก)
 
