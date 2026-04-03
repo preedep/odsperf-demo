@@ -69,13 +69,15 @@ odsperf-demo/
 ├── docs/
 │   ├── schema-account-transaction.md   # DB2→PostgreSQL→MongoDB type mapping
 │   ├── api-reference.md                # REST API specification
-│   └── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
+│   ├── grafana-dashboard.md            # ODS Service Grafana Dashboard setup
+│   └── hot-document-test.md            # Hot document write performance test guide
 ├── scripts/
 │   ├── init-pg-schema.sh               # สร้าง PostgreSQL schema + table (ครั้งแรก)
 │   ├── init-mongo-indexes.sh           # สร้าง MongoDB indexes (ครั้งแรก)
 │   ├── seed.sh                         # Pipeline: generate CSV → load PG → load Mongo
 │   ├── deploy-ods.sh                   # Build Docker image + Deploy ODS Service
 │   ├── test-api.sh                     # Shell script ทดสอบ API + Comparison summary
+│   ├── test-hot-document.sh            # ทดสอบ hot document write performance (MongoDB)
 │   └── compare-disk-usage.sh           # เปรียบเทียบ disk usage PG vs MongoDB
 ├── infra/                              # Infrastructure as Code
 │   ├── namespaces.yaml                 # Kubernetes Namespaces + ResourceQuotas
@@ -117,7 +119,8 @@ odsperf-demo/
 │   └── bin/
 │       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
 │       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
-│       └── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
+│       ├── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
+│       └── test_hot_document.rs        # Hot document write test (embedded arrays)
 ├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
@@ -584,6 +587,28 @@ Storage Efficiency:
   PostgreSQL: 176.00 bytes/row
   MongoDB   : 203.00 bytes/document
 ```
+
+### ทดสอบ Hot Document Performance (MongoDB)
+
+ทดสอบ scenario การเขียน document เดียวกันซ้ำ ๆ (hot document) โดยจำลองการทำ batch aggregation ที่ append statements เข้า array:
+
+```bash
+./scripts/test-hot-document.sh
+```
+
+**สิ่งที่ทดสอบ:**
+- 📝 Document growth performance (array append operations)
+- 🔥 Write contention บน hot documents
+- 📊 Embedded document approach vs normalized collections
+- ⚡ Write throughput และ latency เมื่อ document โต
+
+**Test Configuration:**
+- 10 hot accounts (documents ที่ถูก update บ่อย)
+- 1,000 writes ต่อ account
+- 10 statements ต่อ write
+- รวม 10,000 write operations, 100,000 statements
+
+ดูรายละเอียดเพิ่มเติม: [docs/hot-document-test.md](docs/hot-document-test.md)
 
 ### curl โดยตรง
 

@@ -40,6 +40,10 @@ path = "src/bin/generate_mock_data.rs"
 name = "generate_mock_data_mongo"
 path = "src/bin/generate_mock_data_mongo.rs"
 
+[[bin]]
+name = "test_hot_document"
+path = "src/bin/test_hot_document.rs"
+
 [dependencies]
 # ── Web framework ──────────────────────────────────────────────────────────
 axum              = { version = "0.7",  features = ["macros"] }
