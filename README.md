@@ -112,6 +112,7 @@ odsperf-demo/
 │   │   ├── mod.rs                      # Router + middleware (metrics, tracing)
 │   │   ├── health.rs                   # GET  /health
 │   │   ├── pg.rs                       # POST /v1/query-pg
+│   │   ├── pg_join.rs                  # POST /v1/query-pg-join
 │   │   └── mongo.rs                    # POST /v1/query-mongo
 │   └── bin/
 │       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
@@ -540,9 +541,10 @@ kubectl port-forward svc/ods-service 8080:80 -n ods-service &
 # Benchmark 10 รอบ เปรียบเทียบ latency
 ./scripts/test-api.sh --repeat 10
 
-# เทสเฉพาะ PostgreSQL หรือ MongoDB
-./scripts/test-api.sh --pg
-./scripts/test-api.sh --mongo
+# เทสเฉพาะ PostgreSQL, JOIN, หรือ MongoDB
+./scripts/test-api.sh --pg      # PostgreSQL only
+./scripts/test-api.sh --join    # PostgreSQL JOIN only
+./scripts/test-api.sh --mongo   # MongoDB only
 
 # ดู response เต็ม
 ./scripts/test-api.sh --verbose
@@ -589,7 +591,7 @@ Storage Efficiency:
 # Health check
 curl http://ods.local/health
 
-# Query PostgreSQL
+# Query PostgreSQL (transactions only)
 curl -s -X POST http://ods.local/v1/query-pg \
   -H "Content-Type: application/json" \
   -d '{
@@ -597,6 +599,15 @@ curl -s -X POST http://ods.local/v1/query-pg \
     "start_month": 1, "start_year":  2025,
     "end_month":   12, "end_year":  2025
   }' | jq '{db, total, elapsed_ms}'
+
+# Query PostgreSQL JOIN (account + transactions)
+curl -s -X POST http://ods.local/v1/query-pg-join \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "12345678901",
+    "start_month": 1, "start_year":  2025,
+    "end_month":   12, "end_year":  2025
+  }' | jq '{db, total, elapsed_ms, data: {iacct, custid, segment}}'
 
 # Query MongoDB
 curl -s -X POST http://ods.local/v1/query-mongo \
@@ -725,7 +736,7 @@ graph TD
     end
 
     subgraph NS_ODS["📦 namespace: ods-service  〔Istio sidecar〕"]
-        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-mongo"]
+        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-pg-join\nPOST /v1/query-mongo"]
     end
 
     subgraph NS_MON["📦 namespace: monitoring  〔Istio sidecar〕"]

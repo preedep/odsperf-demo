@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # test-api.sh — ODS Performance Demo API Test Script
-# Tests both /v1/query-pg and /v1/query-mongo endpoints
+# Tests /v1/query-pg, /v1/query-pg-join, and /v1/query-mongo endpoints
 # Usage:
 #   ./scripts/test-api.sh                        # run all tests (default params)
 #   ./scripts/test-api.sh --host localhost:8080  # hit service directly (bypass Istio)
 #   ./scripts/test-api.sh --account 98765432100  # custom account number
 #   ./scripts/test-api.sh --pg                   # PostgreSQL only
+#   ./scripts/test-api.sh --join                 # PostgreSQL JOIN only
 #   ./scripts/test-api.sh --mongo                # MongoDB only
 #   ./scripts/test-api.sh --repeat 5             # run each test 5 times (latency check)
 # =============================================================================
@@ -21,6 +22,7 @@ START_YEAR=2025
 END_MONTH=12
 END_YEAR=2025
 RUN_PG=true
+RUN_PG_JOIN=false
 RUN_MONGO=true
 REPEAT=1
 VERBOSE=false
@@ -42,8 +44,9 @@ while [[ $# -gt 0 ]]; do
     --start-year)  START_YEAR="$2";    shift 2 ;;
     --end-month)   END_MONTH="$2";     shift 2 ;;
     --end-year)    END_YEAR="$2";      shift 2 ;;
-    --pg)          RUN_MONGO=false;    shift   ;;
-    --mongo)       RUN_PG=false;       shift   ;;
+    --pg)          RUN_MONGO=false; RUN_PG_JOIN=false; shift   ;;
+    --join)        RUN_PG=false; RUN_MONGO=false; RUN_PG_JOIN=true; shift ;;
+    --mongo)       RUN_PG=false; RUN_PG_JOIN=false; shift   ;;
     --repeat)      REPEAT="$2";        shift 2 ;;
     --verbose|-v)  VERBOSE=true;       shift   ;;
     --help|-h)
@@ -134,14 +137,31 @@ call_api() {
       printf "\n${CYAN}Response:${RESET}\n"
       jq '.' /tmp/ods_response.json
     else
-      # Show first 2 rows as sample
-      local row_count
-      row_count=$(jq '.data | length' /tmp/ods_response.json 2>/dev/null || echo 0)
-      if [[ "$row_count" -gt 0 ]]; then
-        printf "  Sample (first row): "
-        jq -c '.data[0] | {iacct, dtrans, camt, amount}' /tmp/ods_response.json 2>/dev/null || true
+      # Check if this is a JOIN response (has .data.statements)
+      local has_statements
+      has_statements=$(jq 'has("data") and (.data | has("statements"))' /tmp/ods_response.json 2>/dev/null || echo false)
+      
+      if [[ "$has_statements" == "true" ]]; then
+        # JOIN response - show account info and statement count
+        printf "  Account: "
+        jq -c '.data | {iacct, custid, ctype, segment}' /tmp/ods_response.json 2>/dev/null || true
+        local stmt_count
+        stmt_count=$(jq '.data.statements | length' /tmp/ods_response.json 2>/dev/null || echo 0)
+        printf "  Statements: %d transactions\n" "$stmt_count"
+        if [[ "$stmt_count" -gt 0 ]]; then
+          printf "  Sample (first txn): "
+          jq -c '.data.statements[0] | {dtrans, camt, aamount}' /tmp/ods_response.json 2>/dev/null || true
+        fi
       else
-        log_info "No rows returned for account=${ACCOUNT_NO} in ${START_MONTH}/${START_YEAR}–${END_MONTH}/${END_YEAR}"
+        # Regular response - show first row as sample
+        local row_count
+        row_count=$(jq '.data | length' /tmp/ods_response.json 2>/dev/null || echo 0)
+        if [[ "$row_count" -gt 0 ]]; then
+          printf "  Sample (first row): "
+          jq -c '.data[0] | {iacct, dtrans, camt, aamount}' /tmp/ods_response.json 2>/dev/null || true
+        else
+          log_info "No rows returned for account=${ACCOUNT_NO} in ${START_MONTH}/${START_YEAR}–${END_MONTH}/${END_YEAR}"
+        fi
       fi
     fi
   else
@@ -218,8 +238,9 @@ log_info "Date     : $(date '+%Y-%m-%d %H:%M:%S')"
 
 check_health
 
-[[ "$RUN_PG"    == "true" ]] && run_benchmark "PostgreSQL  /v1/query-pg"    "/v1/query-pg"    "PG_RESULT"
-[[ "$RUN_MONGO" == "true" ]] && run_benchmark "MongoDB     /v1/query-mongo" "/v1/query-mongo" "MONGO_RESULT"
+[[ "$RUN_PG"      == "true" ]] && run_benchmark "PostgreSQL      /v1/query-pg"      "/v1/query-pg"      "PG_RESULT"
+[[ "$RUN_PG_JOIN" == "true" ]] && run_benchmark "PostgreSQL JOIN /v1/query-pg-join" "/v1/query-pg-join" "PG_JOIN_RESULT"
+[[ "$RUN_MONGO"   == "true" ]] && run_benchmark "MongoDB         /v1/query-mongo"   "/v1/query-mongo"   "MONGO_RESULT"
 
 # ── Comparison Summary ────────────────────────────────────────────────────────
 if [[ "$RUN_PG" == "true" && "$RUN_MONGO" == "true" ]]; then

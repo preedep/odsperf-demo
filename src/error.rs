@@ -12,6 +12,9 @@ pub enum AppError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("not found: {0}")]
+    NotFound(String),
+
     #[error("postgresql error: {0}")]
     Postgres(#[from] sqlx::Error),
 
@@ -27,6 +30,9 @@ impl IntoResponse for AppError {
         let (status, code, message) = match &self {
             AppError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone())
+            }
+            AppError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone())
             }
             AppError::Postgres(e) => {
                 error!(error = %e, "postgresql query failed");

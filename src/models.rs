@@ -212,3 +212,75 @@ pub struct Period {
     pub from: String, // "YYYY-MM"
     pub to:   String, // "YYYY-MM"
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Account Master Models
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct PgAccountMaster {
+    pub iacct:        String,
+    pub custid:       String,
+    pub ctype:        String,
+    pub dopen:        NaiveDate,
+    pub dclose:       Option<NaiveDate>,
+    pub cstatus:      String,
+    pub cbranch:      String,
+    pub segment:      String,
+    pub credit_limit: Option<Decimal>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountMasterDto {
+    pub iacct:        String,
+    pub custid:       String,
+    pub ctype:        String,
+    pub dopen:        String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dclose:       Option<String>,
+    pub cstatus:      String,
+    pub cbranch:      String,
+    pub segment:      String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_limit: Option<String>,
+}
+
+impl From<PgAccountMaster> for AccountMasterDto {
+    fn from(a: PgAccountMaster) -> Self {
+        let fmt = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
+        Self {
+            iacct:        a.iacct.trim().to_string(),
+            custid:       a.custid.trim().to_string(),
+            ctype:        a.ctype.trim().to_string(),
+            dopen:        fmt(a.dopen),
+            dclose:       a.dclose.map(fmt),
+            cstatus:      a.cstatus.trim().to_string(),
+            cbranch:      a.cbranch.trim().to_string(),
+            segment:      a.segment.trim().to_string(),
+            credit_limit: a.credit_limit.map(|d| d.to_string()),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JOIN Response
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct AccountWithStatementsDto {
+    #[serde(flatten)]
+    pub account:    AccountMasterDto,
+    pub statements: Vec<TransactionDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueryJoinResponse {
+    pub request_id: String,
+    pub db:         String,
+    pub account_no: String,
+    pub period:     Period,
+    pub total:      usize,
+    /// Query + serialization time in milliseconds
+    pub elapsed_ms: u128,
+    pub data:       AccountWithStatementsDto,
+}
