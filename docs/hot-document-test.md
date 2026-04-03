@@ -10,7 +10,7 @@ This test simulates a **hot document** scenario in MongoDB where multiple batch 
 
 ## Test Scenario
 
-The test creates a collection called `account_statements` with documents structured similarly to the `/v1/query-pg-join` API response:
+The test creates a collection called `final_statements` with documents structured similarly to the `/v1/query-pg-join` API response:
 
 ```json
 {
@@ -51,7 +51,8 @@ The test creates a collection called `account_statements` with documents structu
 
 | Parameter | Default Value | Description |
 |-----------|---------------|-------------|
-| Collection | `account_statements` | MongoDB collection name |
+| Collection | `final_statements` | MongoDB collection name |
+| Index | `{iacct: 1, dtrans: 1}` | Compound index for efficient lookups |
 | Hot Accounts | 10 | Number of frequently updated documents |
 | Writes per Account | 1,000 | Number of update operations per document |
 | Statements per Write | 10 | Array elements appended per update |
@@ -177,12 +178,17 @@ After running the test:
 
 1. **Query the collection**:
    ```bash
-   mongosh "$MONGODB_URI" --eval 'db.account_statements.findOne()'
+   mongosh "$MONGODB_URI" --eval 'db.final_statements.findOne()'
    ```
 
 2. **Check collection statistics**:
    ```bash
-   mongosh "$MONGODB_URI" --eval 'db.account_statements.stats()'
+   mongosh "$MONGODB_URI" --eval 'db.final_statements.stats()'
+   ```
+
+3. **Test index usage**:
+   ```bash
+   mongosh "$MONGODB_URI" --eval 'db.final_statements.find({iacct: "10000000000"}).explain("executionStats")'
    ```
 
 3. **Compare with normalized approach**:

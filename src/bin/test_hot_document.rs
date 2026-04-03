@@ -9,7 +9,7 @@ use std::env;
 use std::str::FromStr;
 use std::time::Instant;
 
-const COLLECTION_NAME: &str = "account_statements";
+const COLLECTION_NAME: &str = "final_statements";
 const NUM_HOT_ACCOUNTS: usize = 10;
 const WRITES_PER_ACCOUNT: usize = 1000;
 const STATEMENTS_PER_WRITE: usize = 10;
@@ -33,9 +33,18 @@ async fn main() -> Result<()> {
     let db = client.database(&mongodb_db);
     let collection = db.collection::<bson::Document>(COLLECTION_NAME);
 
-    // Drop collection if exists to start fresh
+    // Drop collection to start fresh
+    println!("🗑️  Dropping existing collection (if any)...");
     let _ = collection.drop().await;
-    println!("🗑️  Dropped existing collection (if any)\n");
+    println!("✅ Collection cleared\n");
+
+    // Create compound index for efficient lookups
+    println!("🔧 Creating index on {{iacct: 1, dtrans: 1}}...");
+    let index_model = mongodb::IndexModel::builder()
+        .keys(doc! { "iacct": 1, "dtrans": 1 })
+        .build();
+    collection.create_index(index_model).await?;
+    println!("✅ Index created\n");
 
     let mut rng = thread_rng();
 
