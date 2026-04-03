@@ -43,13 +43,17 @@ kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
 # 4. Generate และ load ข้อมูล (รวมสร้าง schema + indexes อัตโนมัติ)
 ./scripts/seed.sh
 
-# 5. Build และ Deploy ODS Service
+# 5. สร้าง final_statements collection (สำหรับ MongoDB no-join API)
+cargo build --release --bin aggregate_final_statements
+./target/release/aggregate_final_statements
+
+# 6. Build และ Deploy ODS Service
 ./scripts/deploy-ods.sh
 
-# 6. ทดสอบ API
+# 7. ทดสอบ API
 ./scripts/test-api.sh --repeat 10
 
-# 7. เปิด Grafana Dashboard
+# 8. เปิด Grafana Dashboard
 # http://grafana.local (admin/admin)
 ```
 
@@ -121,10 +125,11 @@ odsperf-demo/
 │   │   ├── mongo.rs                    # POST /v1/query-mongo (with DB metrics)
 │   │   └── mongo_nojoin.rs             # POST /v1/query-mongo-nojoin (final_statements)
 │   └── bin/
-│       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
-│       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
-│       ├── load_mongo.rs               # Step 3: CSV → MongoDB (batch insert_many)
-│       └── test_hot_document.rs        # Hot document write test (embedded arrays)
+│       ├── generate_csv.rs                  # Step 1: generate data/mock_transactions.csv
+│       ├── load_pg.rs                       # Step 2: CSV → PostgreSQL (batch INSERT)
+│       ├── load_mongo.rs                    # Step 3: CSV → MongoDB (batch insert_many)
+│       ├── aggregate_final_statements.rs    # Aggregate final_statements collection
+│       └── test_hot_document.rs             # Hot document write test (embedded arrays)
 ├── Dockerfile                          # Multi-stage: rust:1.88-slim + debian-slim
 ├── Cargo.toml
 └── README.md
@@ -363,7 +368,57 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 
 > ✅ **Indexes สร้างอัตโนมัติ** ทุกครั้งที่ load ข้อมูล
 
-### 3.5 ตัวอย่าง Output
+### 3.5 สร้าง final_statements Collection (สำหรับ MongoDB No-Join API)
+
+หลังจาก seed ข้อมูลเสร็จแล้ว ให้สร้าง `final_statements` collection ซึ่งเป็นการ aggregate ข้อมูลจาก `account_master` + `account_transaction` เป็น document เดียวที่มี embedded statements array:
+
+```bash
+# Build binary (ครั้งแรก)
+cargo build --release --bin aggregate_final_statements
+
+# Run aggregation
+./target/release/aggregate_final_statements
+```
+
+**สิ่งที่ binary ทำ:**
+1. อ่านข้อมูลจาก `account_master` collection (10,000 accounts)
+2. Aggregate transactions จาก `account_transaction` โดยจัดกลุ่มตาม `iacct`
+3. Merge ข้อมูล account master + embedded statements array
+4. Insert ลงใน `final_statements` collection
+5. สร้าง index `{iacct: 1, dtrans: 1}`
+
+**Output ตัวอย่าง:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║  Aggregate final_statements from Real Data                  ║
+╚══════════════════════════════════════════════════════════════╝
+
+🔌 Connecting to MongoDB...
+✅ Connected successfully
+
+🗑️  Dropping existing 'final_statements' collection...
+✅ Collection dropped
+
+📊 Reading account_master collection...
+✅ Found 10000 accounts
+
+📊 Aggregating transactions by account...
+   → Inserted 1000 documents...
+   → Inserted 2000 documents...
+   ...
+   → Inserted 10000 documents...
+✅ Aggregation complete in 23.82s
+   • Processed: 10000 accounts
+
+🔧 Creating index on {iacct: 1, dtrans: 1}...
+✅ Index created
+
+📊 Documents: 10000
+```
+
+> 💡 **หมายเหตุ:** Collection นี้ใช้สำหรับทดสอบ `/v1/query-mongo-nojoin` API endpoint ซึ่งเป็น pattern ของ embedded documents (denormalized) เทียบกับ JOIN query ของ PostgreSQL
+
+### 3.6 ตัวอย่าง Output
 
 ```
 ══════ Step 1 — Generate CSV ══════
