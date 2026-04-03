@@ -131,6 +131,16 @@ if [ "$DO_ACCOUNTS" = true ]; then
     log_section "Step 0b — Load Account Master → PostgreSQL"
     check_psql
 
+    # Ensure account_master table exists (with indexes)
+    TABLE_EXISTS=$(psql "$DATABASE_URL" -t -c \
+      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'odsperf' AND table_name = 'account_master');" \
+      2>/dev/null | xargs || echo "f")
+    
+    if [ "$TABLE_EXISTS" != "t" ]; then
+      log_info "Table odsperf.account_master not found, creating schema..."
+      "${SCRIPT_DIR}/init-pg-accounts.sh" || log_fail "Failed to initialize account_master schema"
+    fi
+
     EXISTING=$(psql "$DATABASE_URL" -t -c \
       "SELECT COUNT(*) FROM odsperf.account_master;" 2>/dev/null | xargs || echo "0")
     if [ "$EXISTING" -gt 0 ]; then
@@ -182,6 +192,17 @@ if [ "$DO_ACCOUNTS" = true ]; then
         "db.getSiblingDB('${MONGODB_DB}').account_master.countDocuments()" \
         2>/dev/null | tr -d '[:space:]' | grep -o '[0-9]*' | head -1)
       log_ok "MongoDB account_master: ${FINAL} documents loaded"
+
+      # Create indexes for account_master
+      log_info "Creating account_master indexes..."
+      mongosh "$MONGODB_URI" --quiet --eval "
+        db.getSiblingDB('${MONGODB_DB}').account_master.createIndex({iacct: 1}, {unique: true, name: 'idx_pk_account_master'});
+        db.getSiblingDB('${MONGODB_DB}').account_master.createIndex({custid: 1}, {name: 'idx_acctmaster_custid'});
+        db.getSiblingDB('${MONGODB_DB}').account_master.createIndex({ctype: 1}, {name: 'idx_acctmaster_ctype'});
+        db.getSiblingDB('${MONGODB_DB}').account_master.createIndex({cbranch: 1}, {name: 'idx_acctmaster_cbranch'});
+        db.getSiblingDB('${MONGODB_DB}').account_master.createIndex({segment: 1}, {name: 'idx_acctmaster_segment'});
+      " > /dev/null 2>&1
+      log_ok "account_master indexes created"
     fi
   fi
 fi
@@ -211,6 +232,16 @@ if [ "$DO_PG" = true ]; then
   log_section "Step 2 — Load PostgreSQL"
   [ -f "$CSV_PATH" ] || log_fail "CSV not found: ${CSV_PATH}. Run without --pg-only first."
   check_psql
+
+  # Ensure schema and table exist (with indexes)
+  TABLE_EXISTS=$(psql "$DATABASE_URL" -t -c \
+    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'odsperf' AND table_name = 'account_transaction');" \
+    2>/dev/null | xargs || echo "f")
+  
+  if [ "$TABLE_EXISTS" != "t" ]; then
+    log_info "Table odsperf.account_transaction not found, creating schema..."
+    "${SCRIPT_DIR}/init-pg-schema.sh" || log_fail "Failed to initialize PostgreSQL schema"
+  fi
 
   # Check existing rows
   EXISTING=$(psql "$DATABASE_URL" -t -c \
@@ -272,6 +303,10 @@ if [ "$DO_MONGO" = true ]; then
       "db.getSiblingDB('${MONGODB_DB}').account_transaction.countDocuments()" \
       2>/dev/null | tr -d '[:space:]' | grep -o '[0-9]*' | head -1)
     log_ok "MongoDB: ${FINAL} documents loaded"
+
+    # Create indexes after loading data
+    log_info "Creating MongoDB indexes..."
+    "${SCRIPT_DIR}/init-mongo-indexes.sh" || log_fail "Failed to create MongoDB indexes"
   fi
 fi
 

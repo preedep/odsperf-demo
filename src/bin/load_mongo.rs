@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
         "⚡ Speed    : {:.0} docs/s",
         total_inserted as f64 / elapsed.as_secs_f64()
     );
+    println!("\n💡 Tip: Run ./scripts/init-mongo-indexes.sh to create indexes");
 
     Ok(())
 }
