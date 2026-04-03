@@ -40,21 +40,16 @@ echo "127.0.0.1 ods.local grafana.local prometheus.local" | sudo tee -a /etc/hos
 kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
 
-# 4. สร้าง Database schema
-./scripts/init-pg-schema.sh       # PostgreSQL schema + table
-mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" infra/mongodb/init-schema.js
-./scripts/init-mongo-indexes.sh   # MongoDB indexes
-
-# 5. Generate และ load ข้อมูล (1M rows ชุดเดียวกันทั้ง 2 DB)
+# 4. Generate และ load ข้อมูล (รวมสร้าง schema + indexes อัตโนมัติ)
 ./scripts/seed.sh
 
-# 6. Build และ Deploy ODS Service
+# 5. Build และ Deploy ODS Service
 ./scripts/deploy-ods.sh
 
-# 7. ทดสอบ API
+# 6. ทดสอบ API
 ./scripts/test-api.sh --repeat 10
 
-# 8. เปิด Grafana Dashboard
+# 7. เปิด Grafana Dashboard
 # http://grafana.local (admin/admin)
 ```
 
@@ -226,12 +221,15 @@ MongoDB    : mongodb://odsuser:odspassword@mongodb.database-mongo.svc.cluster.lo
 
 ## Step 2: Database Schema
 
+> 💡 **หมายเหตุ:** ถ้าคุณใช้ `./scripts/seed.sh` (แนะนำ) จะไม่ต้องรัน scripts 
+> ในส่วนนี้แยก เพราะ `seed.sh` จะสร้าง schema, tables และ indexes ให้อัตโนมัติ
+
 ### PostgreSQL
 
 ตาราง `odsperf.account_transaction` แปลงจาก DB2 — ดูรายละเอียดที่ [docs/schema-account-transaction.md](docs/schema-account-transaction.md)
 
 ```bash
-# Port-forward แล้วรัน DDL
+# Port-forward แล้วรัน DDL (ถ้าต้องการสร้างแยก)
 make port-forward-postgresql &
 sleep 2
 psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
@@ -243,11 +241,11 @@ psql "postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 สร้าง collection พร้อม `$jsonSchema` validator และ indexes:
 
 ```bash
-# สร้าง collection + schema validator
+# สร้าง collection + schema validator (ถ้าต้องการสร้างแยก)
 mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" \
   infra/mongodb/init-schema.js   # รันจาก project root
 
-# สร้าง indexes
+# สร้าง indexes (ถ้าต้องการสร้างแยก)
 ./scripts/init-mongo-indexes.sh
 ```
 
@@ -302,42 +300,31 @@ kubectl port-forward svc/postgresql 5432:5432 -n database-pg &
 kubectl port-forward svc/mongodb    27017:27017 -n database-mongo &
 ```
 
-### 3.2 สร้าง PostgreSQL Schema (ครั้งแรกเท่านั้น)
-
-**สำคัญ:** ต้องรัน script นี้ก่อนครั้งแรก เพื่อสร้าง schema และ table
-
-```bash
-./scripts/init-pg-schema.sh
-```
-
-Script จะ:
-- สร้าง schema `odsperf`
-- สร้าง table `account_transaction` พร้อม primary key และ indexes
-- Verify ว่า table ถูกสร้างสำเร็จ
-
-### 3.3 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
+### 3.2 รัน Pipeline ทั้งหมดในคำสั่งเดียว (แนะนำ)
 
 ```bash
 ./scripts/seed.sh
 ```
 
-Script จะรัน 3 ขั้นตอนตามลำดับ:
+Script จะรัน 5 ขั้นตอนตามลำดับ:
+0. **ตรวจสอบ Schema** → สร้าง PostgreSQL/MongoDB schema + tables ถ้ายังไม่มี
 1. **Generate CSV** → `data/mock_transactions.csv` (ไม่ต่อ DB)
 2. **Load PostgreSQL** → อ่าน CSV และ insert batch ทีละ 5,000 rows
 3. **Load MongoDB** → อ่าน CSV ชุดเดียวกัน และ insert_many batch ทีละ 5,000 docs
+4. **Create Indexes** → สร้าง indexes อัตโนมัติทั้ง PostgreSQL และ MongoDB
 
-### 3.4 รันแยกทีละขั้นตอน
+> ✅ **ไม่ต้องรัน `init-pg-schema.sh` หรือ `init-mongo-indexes.sh` แยก**  
+> `seed.sh` จะจัดการให้หมดแล้ว
+
+### 3.3 รันแยกทีละขั้นตอน (ทางเลือก)
 
 ```bash
-# ขั้นตอน 0: สร้าง PostgreSQL schema (ครั้งแรกเท่านั้น)
-./scripts/init-pg-schema.sh
-
 # ขั้นตอน 1: สร้าง CSV
 cargo build --release --bin generate_csv
 ./target/release/generate_csv
 # → data/mock_transactions.csv (~100 MB, 1M rows)
 
-# ขั้นตอน 2: Load PostgreSQL
+# ขั้นตอน 2: Load PostgreSQL (สร้าง schema + indexes อัตโนมัติถ้ายังไม่มี)
 cargo build --release --bin load_pg
 DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
   ./target/release/load_pg
@@ -346,19 +333,29 @@ DATABASE_URL="postgresql://odsuser:odspassword@localhost:5432/odsperf" \
 cargo build --release --bin load_mongo
 MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
   ./target/release/load_mongo
+
+# ขั้นตอน 4: สร้าง MongoDB indexes (ถ้ารันแยก)
+./scripts/init-mongo-indexes.sh
 ```
 
-### 3.5 Options ของ seed.sh
+> 💡 **Tip:** ถ้าใช้ `seed.sh` จะไม่ต้องรัน step 4 เพราะสร้างให้อัตโนมัติแล้ว
+
+### 3.4 Options ของ seed.sh
 
 ```bash
-./scripts/seed.sh                 # full pipeline (CSV + PG + Mongo)
-./scripts/seed.sh --csv-only      # สร้าง CSV เท่านั้น
-./scripts/seed.sh --pg-only       # load PG เท่านั้น (CSV ต้องมีอยู่แล้ว)
-./scripts/seed.sh --mongo-only    # load Mongo เท่านั้น (CSV ต้องมีอยู่แล้ว)
-./scripts/seed.sh --no-mongo      # CSV + PG เท่านั้น
+./scripts/seed.sh                    # full pipeline (CSV + PG + Mongo + indexes)
+./scripts/seed.sh --accounts-only    # สร้าง account_master เท่านั้น
+./scripts/seed.sh --txn-only         # สร้าง transactions เท่านั้น (ข้าม accounts)
+./scripts/seed.sh --csv-only         # สร้าง CSV เท่านั้น
+./scripts/seed.sh --pg-only          # load PG เท่านั้น (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --mongo-only       # load Mongo + indexes (CSV ต้องมีอยู่แล้ว)
+./scripts/seed.sh --no-mongo         # CSV + PG เท่านั้น
+./scripts/seed.sh --no-accounts      # ข้าม account_master pipeline
 ```
 
-### ตัวอย่าง Output
+> ✅ **Indexes สร้างอัตโนมัติ** ทุกครั้งที่ load ข้อมูล
+
+### 3.5 ตัวอย่าง Output
 
 ```
 ══════ Step 1 — Generate CSV ══════
@@ -381,7 +378,7 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 🎉 MongoDB load complete! 1000000 docs — 36.8s
 ```
 
-### ข้อมูลที่ Generate
+### 3.6 ข้อมูลที่ Generate
 
 | Field       | รายละเอียด                                              |
 |------------|--------------------------------------------------------|
@@ -393,7 +390,7 @@ MONGODB_URI="mongodb://odsuser:odspassword@localhost:27017/odsperf" \
 | `cmnemo`   | DEP / WDL / TRF / CHQ / FEE / INT / ATM / POS         |
 | `cchannel` | ATM / INET / MOB / BRNC                               |
 
-### ตรวจสอบข้อมูลหลัง Generate
+### 3.7 ตรวจสอบข้อมูลหลัง Generate
 
 **PostgreSQL:**
 ```bash
@@ -885,3 +882,58 @@ kubectl logs -n ods-service -l app=ods-service --tail=50
 kubectl run -it --rm debug --image=curlimages/curl --restart=Never -n ods-service -- \
   curl -s postgresql.database-pg.svc.cluster.local:5432 || true
 ```
+
+---
+
+### MongoDB ช้ามาก (ช้ากว่า PostgreSQL หลายร้อยเท่า)
+
+**สาเหตุ:** MongoDB ไม่มี indexes → ใช้ collection scan
+
+**ตรวจสอบ:**
+```bash
+# Port-forward MongoDB
+kubectl port-forward svc/mongodb 27017:27017 -n database-mongo &
+
+# ดู indexes ที่มีอยู่
+mongosh "mongodb://odsuser:odspassword@localhost:27017/odsperf" --eval "
+  db.account_transaction.getIndexes()
+"
+
+# ควรเห็น indexes อย่างน้อย 5 ตัว:
+# - _id_ (default)
+# - idx_pk_account_transaction (unique)
+# - idx_acctxn_iacct_dtrans
+# - idx_acctxn_drun
+# - idx_acctxn_camt
+```
+
+**แก้ไข:**
+```bash
+# สร้าง indexes
+./scripts/init-mongo-indexes.sh
+
+# หรือ re-seed ข้อมูลใหม่ (จะสร้าง indexes อัตโนมัติ)
+./scripts/seed.sh --mongo-only
+```
+
+**ผลลัพธ์ที่คาดหวัง:**
+- PostgreSQL: ~2-5ms (มี B-tree index)
+- MongoDB: ~5-15ms (มี index + document overhead)
+- **MongoDB ควรช้ากว่า PostgreSQL แค่ 2-5 เท่า** ไม่ใช่ 100-300 เท่า!
+
+---
+
+### init-mongo-indexes.sh Error: "Index already exists"
+
+**สาเหตุ:** Script รุ่นเก่าพยายามสร้าง index ที่มีอยู่แล้ว
+
+**แก้ไข:**
+```bash
+# Pull code ล่าสุด (มี fix แล้ว)
+git pull
+
+# รัน script อีกครั้ง (จะ skip indexes ที่มีอยู่แล้ว)
+./scripts/init-mongo-indexes.sh
+```
+
+Script รุ่นใหม่จะตรวจสอบและ skip indexes ที่มีอยู่แล้วอัตโนมัติ
