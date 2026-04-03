@@ -20,25 +20,50 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "mongodb://odsuser:odspassword@localhost:27017/odsperf".to_string());
     let mongodb_db = env::var("MONGODB_DB").unwrap_or_else(|_| "odsperf".to_string());
 
+    let collection = setup_collection(&mongodb_uri, &mongodb_db).await?;
+
+    let mut rng = thread_rng();
+    let hot_accounts = generate_hot_accounts();
+    
+    print_test_configuration();
+    initialize_account_documents(&collection, &hot_accounts, &mut rng).await?;
+
+    let stats = run_hot_document_test(&collection, &hot_accounts, &mut rng).await?;
+    
+    print_test_results(&stats);
+    print_document_analysis(&collection, &hot_accounts).await?;
+
+    println!();
+    println!("╔════════════════════════════════════════════════════════════════════════╗");
+    println!("║                      Test Completed Successfully!                      ║");
+    println!("╚════════════════════════════════════════════════════════════════════════╝");
+
+    Ok(())
+}
+
+// ─── Setup & Initialization Functions ─────────────────────────────────────────
+
+async fn setup_collection(
+    mongodb_uri: &str,
+    mongodb_db: &str,
+) -> Result<mongodb::Collection<bson::Document>> {
     println!("🔌 Connecting to MongoDB...");
-    let client_options = ClientOptions::parse(&mongodb_uri).await?;
+    let client_options = ClientOptions::parse(mongodb_uri).await?;
     let client = Client::with_options(client_options)?;
 
     client
-        .database(&mongodb_db)
+        .database(mongodb_db)
         .run_command(doc! { "ping": 1 })
         .await?;
     println!("✅ Connected successfully\n");
 
-    let db = client.database(&mongodb_db);
+    let db = client.database(mongodb_db);
     let collection = db.collection::<bson::Document>(COLLECTION_NAME);
 
-    // Drop collection to start fresh
     println!("🗑️  Dropping existing collection (if any)...");
     let _ = collection.drop().await;
     println!("✅ Collection cleared\n");
 
-    // Create compound index for efficient lookups
     println!("🔧 Creating index on {{iacct: 1, dtrans: 1}}...");
     let index_model = mongodb::IndexModel::builder()
         .keys(doc! { "iacct": 1, "dtrans": 1 })
@@ -46,13 +71,16 @@ async fn main() -> Result<()> {
     collection.create_index(index_model).await?;
     println!("✅ Index created\n");
 
-    let mut rng = thread_rng();
+    Ok(collection)
+}
 
-    // Generate hot account numbers
-    let hot_accounts: Vec<String> = (0..NUM_HOT_ACCOUNTS)
+fn generate_hot_accounts() -> Vec<String> {
+    (0..NUM_HOT_ACCOUNTS)
         .map(|i| format!("{:011}", 10000000000u64 + i as u64))
-        .collect();
+        .collect()
+}
 
+fn print_test_configuration() {
     println!("📋 Test Configuration:");
     println!("   • Collection: {}", COLLECTION_NAME);
     println!("   • Hot accounts: {}", NUM_HOT_ACCOUNTS);
@@ -60,15 +88,38 @@ async fn main() -> Result<()> {
     println!("   • Statements per write: {}", STATEMENTS_PER_WRITE);
     println!("   • Total writes: {}", NUM_HOT_ACCOUNTS * WRITES_PER_ACCOUNT);
     println!("   • Total statements: {}\n", NUM_HOT_ACCOUNTS * WRITES_PER_ACCOUNT * STATEMENTS_PER_WRITE);
+}
 
-    // Initialize documents with account master data
+async fn initialize_account_documents(
+    collection: &mongodb::Collection<bson::Document>,
+    hot_accounts: &[String],
+    rng: &mut ThreadRng,
+) -> Result<()> {
     println!("🔧 Initializing {} account documents...", NUM_HOT_ACCOUNTS);
-    for account_no in &hot_accounts {
-        let account_doc = generate_account_master(account_no, &mut rng);
+    for account_no in hot_accounts {
+        let account_doc = generate_account_master(account_no, rng);
         collection.insert_one(account_doc).await?;
     }
     println!("✅ Initialization complete\n");
+    Ok(())
+}
 
+// ─── Test Execution Functions ─────────────────────────────────────────────────
+
+struct TestStatistics {
+    total_writes: usize,
+    total_statements: usize,
+    total_duration: std::time::Duration,
+    min_write_time: f64,
+    max_write_time: f64,
+    avg_write_time: f64,
+}
+
+async fn run_hot_document_test(
+    collection: &mongodb::Collection<bson::Document>,
+    hot_accounts: &[String],
+    rng: &mut ThreadRng,
+) -> Result<TestStatistics> {
     println!("╔════════════════════════════════════════════════════════════════════════╗");
     println!("║              Starting Hot Document Write Test                          ║");
     println!("╚════════════════════════════════════════════════════════════════════════╝\n");
@@ -76,98 +127,151 @@ async fn main() -> Result<()> {
     let test_start = Instant::now();
     let mut total_writes = 0;
     let mut total_statements_written = 0;
-
-    // Statistics tracking
     let mut min_write_time = f64::MAX;
     let mut max_write_time = 0.0f64;
     let mut sum_write_time = 0.0f64;
 
-    // Perform writes
     for write_num in 0..WRITES_PER_ACCOUNT {
         let batch_start = Instant::now();
 
-        // Write to all hot accounts in this iteration
-        for account_no in &hot_accounts {
-            let write_start = Instant::now();
-
-            // Generate statements for this write
-            let statements: Vec<Bson> = (0..STATEMENTS_PER_WRITE)
-                .map(|_| Bson::Document(generate_transaction(account_no, &mut rng)))
-                .collect();
-
-            // Append to the statements array using $push with $each
-            collection
-                .update_one(
-                    doc! { "iacct": account_no },
-                    doc! { "$push": { "statements": { "$each": statements } } },
-                )
-                .await?;
-
-            let write_elapsed = write_start.elapsed().as_secs_f64() * 1000.0; // ms
-            min_write_time = min_write_time.min(write_elapsed);
-            max_write_time = max_write_time.max(write_elapsed);
-            sum_write_time += write_elapsed;
-
+        for account_no in hot_accounts {
+            let write_time = perform_single_write(collection, account_no, rng).await?;
+            
+            min_write_time = min_write_time.min(write_time);
+            max_write_time = max_write_time.max(write_time);
+            sum_write_time += write_time;
             total_writes += 1;
             total_statements_written += STATEMENTS_PER_WRITE;
         }
 
-        let batch_elapsed = batch_start.elapsed();
-        let overall_elapsed = test_start.elapsed();
-        let writes_per_sec = total_writes as f64 / overall_elapsed.as_secs_f64();
-        let statements_per_sec = total_statements_written as f64 / overall_elapsed.as_secs_f64();
-
-        // Progress report every 100 iterations
         if (write_num + 1) % 100 == 0 || write_num == 0 {
-            println!(
-                "✓ Iteration {:>4}/{} | Writes: {:>6} | Batch: {:>6.2}ms | Total: {:>7.2}s | {:>7.0} writes/s | {:>8.0} stmt/s",
+            print_progress(
                 write_num + 1,
-                WRITES_PER_ACCOUNT,
                 total_writes,
-                batch_elapsed.as_millis(),
-                overall_elapsed.as_secs_f64(),
-                writes_per_sec,
-                statements_per_sec
+                total_statements_written,
+                batch_start.elapsed(),
+                test_start.elapsed(),
             );
         }
     }
 
-    let total_elapsed = test_start.elapsed();
-    let avg_write_time = sum_write_time / total_writes as f64;
+    Ok(TestStatistics {
+        total_writes,
+        total_statements: total_statements_written,
+        total_duration: test_start.elapsed(),
+        min_write_time,
+        max_write_time,
+        avg_write_time: sum_write_time / total_writes as f64,
+    })
+}
 
+async fn perform_single_write(
+    collection: &mongodb::Collection<bson::Document>,
+    account_no: &str,
+    rng: &mut ThreadRng,
+) -> Result<f64> {
+    let write_start = Instant::now();
+
+    let statements: Vec<Bson> = (0..STATEMENTS_PER_WRITE)
+        .map(|_| Bson::Document(generate_transaction(account_no, rng)))
+        .collect();
+
+    let max_dtrans = extract_max_dtrans(&statements);
+    let update_doc = build_update_document(statements, max_dtrans);
+
+    collection
+        .update_one(doc! { "iacct": account_no }, update_doc)
+        .await?;
+
+    Ok(write_start.elapsed().as_secs_f64() * 1000.0)
+}
+
+fn extract_max_dtrans(statements: &[Bson]) -> Option<BsonDateTime> {
+    statements
+        .iter()
+        .filter_map(|s| {
+            if let Bson::Document(doc) = s {
+                doc.get("dtrans").and_then(|d| {
+                    if let Bson::DateTime(dt) = d {
+                        Some(*dt)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
+fn build_update_document(statements: Vec<Bson>, max_dtrans: Option<BsonDateTime>) -> bson::Document {
+    let mut update_doc = doc! {
+        "$push": { "statements": { "$each": statements } }
+    };
+    
+    if let Some(max_dt) = max_dtrans {
+        update_doc.insert("$max", doc! { "dtrans": max_dt });
+    }
+    
+    update_doc
+}
+
+// ─── Reporting Functions ──────────────────────────────────────────────────────
+
+fn print_progress(
+    iteration: usize,
+    total_writes: usize,
+    total_statements: usize,
+    batch_elapsed: std::time::Duration,
+    overall_elapsed: std::time::Duration,
+) {
+    let writes_per_sec = total_writes as f64 / overall_elapsed.as_secs_f64();
+    let statements_per_sec = total_statements as f64 / overall_elapsed.as_secs_f64();
+
+    println!(
+        "✓ Iteration {:>4}/{} | Writes: {:>6} | Batch: {:>6.2}ms | Total: {:>7.2}s | {:>7.0} writes/s | {:>8.0} stmt/s",
+        iteration,
+        WRITES_PER_ACCOUNT,
+        total_writes,
+        batch_elapsed.as_millis(),
+        overall_elapsed.as_secs_f64(),
+        writes_per_sec,
+        statements_per_sec
+    );
+}
+
+fn print_test_results(stats: &TestStatistics) {
     println!("\n╔════════════════════════════════════════════════════════════════════════╗");
     println!("║                        Test Results Summary                            ║");
     println!("╚════════════════════════════════════════════════════════════════════════╝\n");
 
     println!("📊 Write Statistics:");
-    println!("   • Total writes:           {:>10}", total_writes);
-    println!("   • Total statements:       {:>10}", total_statements_written);
-    println!("   • Total duration:         {:>10.2} seconds", total_elapsed.as_secs_f64());
+    println!("   • Total writes:           {:>10}", stats.total_writes);
+    println!("   • Total statements:       {:>10}", stats.total_statements);
+    println!("   • Total duration:         {:>10.2} seconds", stats.total_duration.as_secs_f64());
     println!();
 
     println!("⚡ Performance Metrics:");
-    println!("   • Writes per second:      {:>10.2}", total_writes as f64 / total_elapsed.as_secs_f64());
-    println!("   • Statements per second:  {:>10.2}", total_statements_written as f64 / total_elapsed.as_secs_f64());
+    println!("   • Writes per second:      {:>10.2}", stats.total_writes as f64 / stats.total_duration.as_secs_f64());
+    println!("   • Statements per second:  {:>10.2}", stats.total_statements as f64 / stats.total_duration.as_secs_f64());
     println!();
 
     println!("⏱️  Write Latency (ms):");
-    println!("   • Average:                {:>10.2}", avg_write_time);
-    println!("   • Minimum:                {:>10.2}", min_write_time);
-    println!("   • Maximum:                {:>10.2}", max_write_time);
+    println!("   • Average:                {:>10.2}", stats.avg_write_time);
+    println!("   • Minimum:                {:>10.2}", stats.min_write_time);
+    println!("   • Maximum:                {:>10.2}", stats.max_write_time);
     println!();
+}
 
-    // Verify final document sizes
+async fn print_document_analysis(
+    collection: &mongodb::Collection<bson::Document>,
+    hot_accounts: &[String],
+) -> Result<()> {
     println!("📄 Document Analysis:");
     for (idx, account_no) in hot_accounts.iter().enumerate() {
-        if let Some(doc) = collection
-            .find_one(doc! { "iacct": account_no })
-            .await?
-        {
-            let stmt_count = doc
-                .get_array("statements")
-                .map(|arr| arr.len())
-                .unwrap_or(0);
-            
+        if let Some(doc) = collection.find_one(doc! { "iacct": account_no }).await? {
+            let stmt_count = doc.get_array("statements").map(|arr| arr.len()).unwrap_or(0);
             let doc_size = bson::to_vec(&doc)?.len();
             
             println!(
@@ -180,12 +284,6 @@ async fn main() -> Result<()> {
             );
         }
     }
-
-    println!();
-    println!("╔════════════════════════════════════════════════════════════════════════╗");
-    println!("║                      Test Completed Successfully!                      ║");
-    println!("╚════════════════════════════════════════════════════════════════════════╝");
-
     Ok(())
 }
 
@@ -214,6 +312,9 @@ fn generate_account_master(account_no: &str, rng: &mut ThreadRng) -> bson::Docum
     let segments = ["RETAIL", "SME", "CORPORATE", "PREMIUM"];
     let segment = segments[rng.gen_range(0..segments.len())];
 
+    // Initialize with a base date that will be updated on first write
+    let initial_dtrans = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+    
     doc! {
         "iacct": account_no,
         "custid": format!("{:010}", rng.gen_range(1000000000u64..9999999999u64)),
@@ -224,6 +325,7 @@ fn generate_account_master(account_no: &str, rng: &mut ThreadRng) -> bson::Docum
         "cbranch": format!("{:04}", rng.gen_range(1u32..9999u32)),
         "segment": segment,
         "credit_limit": Bson::Decimal128(decimal_to_bson(Decimal::new(rng.gen_range(10000i64..1000000i64), 2))),
+        "dtrans": naive_date_to_bson(initial_dtrans),  // Latest transaction date for querying
         "statements": Bson::Array(vec![]),
     }
 }
