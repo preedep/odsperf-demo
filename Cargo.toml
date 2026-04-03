@@ -19,6 +19,18 @@ path = "src/bin/load_pg.rs"
 name = "load_mongo"
 path = "src/bin/load_mongo.rs"
 
+[[bin]]
+name = "generate_account_csv"
+path = "src/bin/generate_account_csv.rs"
+
+[[bin]]
+name = "load_pg_accounts"
+path = "src/bin/load_pg_accounts.rs"
+
+[[bin]]
+name = "load_mongo_accounts"
+path = "src/bin/load_mongo_accounts.rs"
+
 # ── Legacy (kept for reference, superseded by generate_csv + load_pg/load_mongo) ──
 [[bin]]
 name = "generate_mock_data"
