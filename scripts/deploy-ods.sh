@@ -50,18 +50,18 @@ for arg in "$@"; do
   esac
 done
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+log_ok()   { printf "${GREEN}✔${NC}  %s\n" "$1"; }
+log_fail() { printf "${RED}✘${NC}  %s\n" "$1"; exit 1; }
+log_info() { printf "${YELLOW}ℹ${NC}  %s\n" "$1"; }
+log_step() { printf "\n${BOLD}${CYAN}══════ %s ══════${NC}\n" "$1"; }
+
 # If --force is used, generate unique tag
 if [ "$DO_FORCE" = true ]; then
   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
   IMAGE_TAG="v${TIMESTAMP}"
   log_info "Force mode: using unique tag ${IMAGE_TAG}"
 fi
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-log_ok()   { printf "${GREEN}✔${NC}  %s\n" "$1"; }
-log_fail() { printf "${RED}✘${NC}  %s\n" "$1"; exit 1; }
-log_info() { printf "${YELLOW}ℹ${NC}  %s\n" "$1"; }
-log_step() { printf "\n${BOLD}${CYAN}══════ %s ══════${NC}\n" "$1"; }
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 printf "${BOLD}${CYAN}"

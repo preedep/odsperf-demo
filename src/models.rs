@@ -102,6 +102,43 @@ pub struct MongoTransaction {
     pub time_hms:    Option<String>,
 }
 
+/// MongoDB final_statements document (account + embedded statements array)
+#[derive(Debug, serde::Deserialize)]
+pub struct MongoFinalStatement {
+    pub iacct:        String,
+    pub custid:       String,
+    pub ctype:        String,
+    pub dopen:        bson::DateTime,
+    pub dclose:       Option<bson::DateTime>,
+    pub cstatus:      String,
+    pub cbranch:      String,
+    pub segment:      String,
+    pub credit_limit: Option<bson::Decimal128>,
+    pub dtrans:       Option<bson::DateTime>,
+    #[serde(default)]
+    pub statements:   Vec<MongoStatementEmbedded>,
+}
+
+/// Embedded statement in final_statements collection
+#[derive(Debug, serde::Deserialize)]
+pub struct MongoStatementEmbedded {
+    pub drun:        bson::DateTime,
+    pub cseq:        i32,
+    pub dtrans:      Option<bson::DateTime>,
+    pub ddate:       bson::DateTime,
+    pub ttime:       Option<String>,
+    pub cmnemo:      Option<String>,
+    pub cchannel:    Option<String>,
+    pub ctr:         Option<String>,
+    pub cbr:         Option<String>,
+    pub cterm:       Option<String>,
+    pub camt:        Option<String>,
+    pub aamount:     Option<bson::Decimal128>,
+    pub abal:        Option<bson::Decimal128>,
+    pub description: Option<String>,
+    pub time_hms:    Option<String>,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared DTO — serialized in API response
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +224,51 @@ impl From<MongoTransaction> for TransactionDto {
             abal:        t.abal.map(|d| d.to_string()),
             description: t.description,
             time_hms:    t.time_hms,
+        }
+    }
+}
+
+impl From<MongoStatementEmbedded> for TransactionDto {
+    fn from(t: MongoStatementEmbedded) -> Self {
+        let fmt_bson = |d: bson::DateTime| -> String {
+            d.to_chrono().format("%Y-%m-%d").to_string()
+        };
+        Self {
+            iacct:       String::new(), // Will be filled from parent document
+            drun:        fmt_bson(t.drun),
+            cseq:        t.cseq,
+            dtrans:      t.dtrans.map(fmt_bson),
+            ddate:       fmt_bson(t.ddate),
+            ttime:       t.ttime,
+            cmnemo:      t.cmnemo,
+            cchannel:    t.cchannel,
+            ctr:         t.ctr,
+            cbr:         t.cbr,
+            cterm:       t.cterm,
+            camt:        t.camt,
+            aamount:     t.aamount.map(|d| d.to_string()),
+            abal:        t.abal.map(|d| d.to_string()),
+            description: t.description,
+            time_hms:    t.time_hms,
+        }
+    }
+}
+
+impl From<MongoFinalStatement> for AccountMasterDto {
+    fn from(a: MongoFinalStatement) -> Self {
+        let fmt_bson = |d: bson::DateTime| -> String {
+            d.to_chrono().format("%Y-%m-%d").to_string()
+        };
+        Self {
+            iacct:        a.iacct,
+            custid:       a.custid,
+            ctype:        a.ctype,
+            dopen:        fmt_bson(a.dopen),
+            dclose:       a.dclose.map(fmt_bson),
+            cstatus:      a.cstatus,
+            cbranch:      a.cbranch,
+            segment:      a.segment,
+            credit_limit: a.credit_limit.map(|d| d.to_string()),
         }
     }
 }
@@ -283,4 +365,20 @@ pub struct QueryJoinResponse {
     /// Query + serialization time in milliseconds
     pub elapsed_ms: u128,
     pub data:       AccountWithStatementsDto,
+}
+
+/// Response for MongoDB no-join query (final_statements collection)
+#[derive(Debug, Serialize)]
+pub struct QueryMongoNoJoinResponse {
+    pub request_id: String,
+    pub db:         String,
+    pub account_no: String,
+    pub period:     Period,
+    pub total:      usize,
+    /// Query + serialization time in milliseconds
+    pub elapsed_ms: u128,
+    #[serde(flatten)]
+    pub account:    AccountMasterDto,
+    #[serde(rename = "Statements")]
+    pub statements: Vec<TransactionDto>,
 }

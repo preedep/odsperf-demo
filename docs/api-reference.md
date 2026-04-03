@@ -7,11 +7,13 @@ Base URL (port-forward):      `http://localhost:8080`
 
 ## Endpoints
 
-| Method | Path              | Database   | Description                     |
-|--------|-------------------|------------|---------------------------------|
-| GET    | `/health`         | —          | Health check / liveness probe   |
-| POST   | `/v1/query-pg`    | PostgreSQL | Query account transactions      |
-| POST   | `/v1/query-mongo` | MongoDB    | Query account transactions      |
+| Method | Path                      | Database   | Description                                    |
+|--------|---------------------------|------------|------------------------------------------------|
+| GET    | `/health`                 | —          | Health check / liveness probe                  |
+| POST   | `/v1/query-pg`            | PostgreSQL | Query account transactions                     |
+| POST   | `/v1/query-pg-join`       | PostgreSQL | Query account with transactions (JOIN)         |
+| POST   | `/v1/query-mongo`         | MongoDB    | Query account transactions                     |
+| POST   | `/v1/query-mongo-nojoin`  | MongoDB    | Query from final_statements (embedded array)   |
 
 ---
 
@@ -137,6 +139,94 @@ Identical request/response schema to `/v1/query-pg` but queries **MongoDB** `acc
 
 ---
 
+## POST /v1/query-mongo-nojoin
+
+Query **MongoDB** `final_statements` collection which contains account master data with embedded statements array. This endpoint returns account information along with filtered statements in a single document query.
+
+### Request Headers
+
+Same as `/v1/query-pg`
+
+### Request Body
+
+Same as `/v1/query-pg`
+
+### Response `200 OK`
+
+```json
+{
+  "request_id": "ebbc9f38-51e5-4289-83d0-14b32c79ee71",
+  "db": "mongodb-nojoin",
+  "account_no": "10000000001",
+  "period": {
+    "from": "2025-01",
+    "to": "2025-03"
+  },
+  "total": 1,
+  "elapsed_ms": 2,
+  "iacct": "10000000001",
+  "custid": "1842644912",
+  "ctype": "CURRENT",
+  "dopen": "2021-06-15",
+  "cstatus": "ACTIVE",
+  "cbranch": "9839",
+  "segment": "CORPORATE",
+  "credit_limit": "9156.02",
+  "Statements": [
+    {
+      "iacct": "10000000001",
+      "drun": "2025-01-04",
+      "cseq": 1,
+      "dtrans": "2025-01-04",
+      "ddate": "2025-01-04",
+      "ttime": "08:22",
+      "cmnemo": "INT",
+      "cchannel": "MOB",
+      "ctr": "61",
+      "cbr": "9525",
+      "cterm": "60518",
+      "camt": "D",
+      "aamount": "733.26",
+      "abal": "34443.38",
+      "description": "LOAN PAYMENT",
+      "time_hms": "08:22:25"
+    }
+  ]
+}
+```
+
+### Response Fields
+
+| Field        | Type    | Description                                    |
+|-------------|---------|------------------------------------------------|
+| `request_id` | string  | Correlation ID (from header or auto-generated) |
+| `db`         | string  | `"mongodb-nojoin"`                             |
+| `account_no` | string  | Echo of the requested account number           |
+| `period`     | object  | `from` / `to` in `YYYY-MM` format              |
+| `total`      | integer | Number of statements returned (after filtering)|
+| `elapsed_ms` | integer | Query + filtering time in milliseconds         |
+| `iacct`      | string  | Account number                                 |
+| `custid`     | string  | Customer ID                                    |
+| `ctype`      | string  | Account type                                   |
+| `dopen`      | string  | Account open date (YYYY-MM-DD)                 |
+| `dclose`     | string? | Account close date (optional)                  |
+| `cstatus`    | string  | Account status                                 |
+| `cbranch`    | string  | Branch code                                    |
+| `segment`    | string  | Customer segment                               |
+| `credit_limit` | string? | Credit limit (optional)                      |
+| `Statements` | array   | Filtered transaction records                   |
+
+### Error Responses
+
+| Status | Code              | Cause                               |
+|--------|-------------------|-------------------------------------|
+| 400    | `BAD_REQUEST`     | Invalid account_no, dates, or range |
+| 404    | `NOT_FOUND`       | Account not found in collection     |
+| 500    | `DB_ERROR`        | MongoDB query failed                |
+| 500    | `INTERNAL_ERROR`  | Unexpected server error             |
+
+---
+
 ## Logging
 
 All requests produce structured log lines. In Kubernetes (`RUST_LOG_FORMAT=json`):
@@ -195,6 +285,17 @@ curl -s -X POST http://ods.local/v1/query-mongo \
     "start_month": 1,
     "start_year":  2025,
     "end_month":   12,
+    "end_year":    2025
+  }' | jq .
+
+# Query MongoDB no-join (final_statements)
+curl -s -X POST http://ods.local/v1/query-mongo-nojoin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no":  "10000000001",
+    "start_month": 1,
+    "start_year":  2025,
+    "end_month":   3,
     "end_year":    2025
   }' | jq .
 

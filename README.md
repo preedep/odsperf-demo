@@ -118,7 +118,8 @@ odsperf-demo/
 │   │   ├── health.rs                   # GET  /health
 │   │   ├── pg.rs                       # POST /v1/query-pg (with DB metrics)
 │   │   ├── pg_join.rs                  # POST /v1/query-pg-join
-│   │   └── mongo.rs                    # POST /v1/query-mongo (with DB metrics)
+│   │   ├── mongo.rs                    # POST /v1/query-mongo (with DB metrics)
+│   │   └── mongo_nojoin.rs             # POST /v1/query-mongo-nojoin (final_statements)
 │   └── bin/
 │       ├── generate_csv.rs             # Step 1: generate data/mock_transactions.csv
 │       ├── load_pg.rs                  # Step 2: CSV → PostgreSQL (batch INSERT)
@@ -556,6 +557,12 @@ curl http://localhost:8080/metrics
 
 ดู API specification เต็มที่ [docs/api-reference.md](docs/api-reference.md)
 
+**API Endpoints ที่มี:**
+- `POST /v1/query-pg` - Query PostgreSQL `account_transaction` table
+- `POST /v1/query-pg-join` - Query PostgreSQL with JOIN (account + transactions)
+- `POST /v1/query-mongo` - Query MongoDB `account_transaction` collection
+- `POST /v1/query-mongo-nojoin` - Query MongoDB `final_statements` collection (embedded array)
+
 ### ใช้ test-api.sh (แนะนำ)
 
 ```bash
@@ -577,6 +584,43 @@ kubectl port-forward svc/ods-service 8080:80 -n ods-service &
 # ดู response เต็ม
 ./scripts/test-api.sh --verbose
 ```
+
+### ทดสอบ MongoDB No-Join Endpoint
+
+```bash
+# ทดสอบ MongoDB no-join (final_statements collection)
+curl -s -X POST http://ods.local/v1/query-mongo-nojoin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_no": "10000000001",
+    "start_month": 1,
+    "start_year": 2025,
+    "end_month": 3,
+    "end_year": 2025
+  }' | jq .
+```
+
+**Output ตัวอย่าง:**
+```json
+{
+  "request_id": "...",
+  "db": "mongodb-nojoin",
+  "account_no": "10000000001",
+  "period": { "from": "2025-01", "to": "2025-03" },
+  "total": 1,
+  "elapsed_ms": 2,
+  "iacct": "10000000001",
+  "custid": "1842644912",
+  "ctype": "CURRENT",
+  "dopen": "2021-06-15",
+  "cstatus": "ACTIVE",
+  "cbranch": "9839",
+  "segment": "CORPORATE",
+  "credit_limit": "9156.02",
+  "Statements": [...]
+}
+```
+
 
 ### ตรวจสอบ Metrics
 
@@ -825,7 +869,7 @@ graph TD
     end
 
     subgraph NS_ODS["📦 namespace: ods-service  〔Istio sidecar〕"]
-        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-pg-join\nPOST /v1/query-mongo"]
+        ODS["⚙️ ODS Service\nRust · Axum 0.7\n─────────────────────\nGET  /health\nPOST /v1/query-pg\nPOST /v1/query-pg-join\nPOST /v1/query-mongo\nPOST /v1/query-mongo-nojoin"]
     end
 
     subgraph NS_MON["📦 namespace: monitoring  〔Istio sidecar〕"]

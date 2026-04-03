@@ -1,5 +1,6 @@
 pub mod health;
 pub mod mongo;
+pub mod mongo_nojoin;
 pub mod pg;
 pub mod pg_join;
 
@@ -37,9 +38,10 @@ pub fn router(state: Arc<AppState>, metrics_handle: PrometheusHandle) -> Router 
             move || async move { handle.render() }
         }))
         // ODS query APIs
-        .route("/v1/query-pg",      post(pg::handle))
-        .route("/v1/query-pg-join", post(pg_join::handle))
-        .route("/v1/query-mongo",   post(mongo::handle))
+        .route("/v1/query-pg",           post(pg::handle))
+        .route("/v1/query-pg-join",      post(pg_join::handle))
+        .route("/v1/query-mongo",        post(mongo::handle))
+        .route("/v1/query-mongo-nojoin", post(mongo_nojoin::handle))
         // Shared state
         .with_state(state)
         // ── Middleware stack (applied bottom-up) ───────────────────────────
