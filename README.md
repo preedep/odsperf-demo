@@ -599,14 +599,27 @@ Storage Efficiency:
 **สิ่งที่ทดสอบ:**
 - 📝 Document growth performance (array append operations)
 - 🔥 Write contention บน hot documents
-- 📊 Embedded document approach vs normalized collections
+- 📊 Embedded document approach (account + date + statements)
 - ⚡ Write throughput และ latency เมื่อ document โต
+- 🔑 Compound index performance `{iacct: 1, dtrans: 1}`
 
 **Test Configuration:**
-- 10 hot accounts (documents ที่ถูก update บ่อย)
-- 1,000 writes ต่อ account
-- 10 statements ต่อ write
-- รวม 10,000 write operations, 100,000 statements
+- **Collection:** `final_statements`
+- **Document structure:** 1 document = 1 account + 1 วัน (compound key)
+- **Hot accounts:** 10 accounts
+- **Hot dates:** อ่านจาก `account_transaction` (หรือ 365 วันถ้า collection ว่าง)
+- **Writes per document:** 100 ครั้ง (จำลอง batch writes ซ้ำ)
+- **Statements per write:** 10 statements
+- **Total:** ~365,000 writes, ~3,650,000 statements (ถ้ามี 365 วัน)
+
+**Document Example:**
+```json
+{
+  "iacct": "10000000000",
+  "dtrans": ISODate("2025-01-15"),
+  "statements": [/* transactions ทั้งหมดของวันนี้ */]
+}
+```
 
 ดูรายละเอียดเพิ่มเติม: [docs/hot-document-test.md](docs/hot-document-test.md)
 
